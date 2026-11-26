@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { collection, onSnapshot, orderBy, query, where } from 'firebase/firestore';
-import { httpsCallable } from 'firebase/functions';
-import { db, functions } from '../../config/firebase';
+import { db } from '../../config/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { FinancialRequest } from '../../types/domain';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { Check, X } from 'lucide-react';
+import { processApprovalDecisionSpark } from '../../services/sparkOperations';
 
 interface ApprovalWorkspaceProps {
   stage: 'MANAGER' | 'FINANCE_MANAGER';
@@ -56,9 +56,9 @@ export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage 
 
     setBusyId(req.id);
     try {
-      const decideFn = httpsCallable(functions, 'processApprovalDecision');
       const customAmt = approvedAmounts[req.id];
-      await decideFn({
+      if (!profile) throw new Error('You must be signed in to approve requests.');
+      await processApprovalDecisionSpark({
         requestId: req.id,
         stage,
         decision,
@@ -67,6 +67,7 @@ export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage 
           stage === 'FINANCE_MANAGER' && decision === 'APPROVED' && customAmt
             ? Number(customAmt)
             : req.requestedAmount,
+        user: profile,
       });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Approval action failed');
@@ -82,7 +83,7 @@ export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage 
           {stage === 'MANAGER' ? 'Manager Approval Workspace' : 'Finance Manager Approval Workspace'}
         </h2>
         <p className="text-xs text-slate-500">
-          Segregation of duties enforced: self-approval and dual-stage single-person approval are blocked on server.
+          Segregation of duties enforced: self-approval and dual-stage single-person approval are blocked.
         </p>
       </div>
 

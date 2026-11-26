@@ -58,13 +58,24 @@ test('RETAC Security Rules Acceptance Suite', async (t) => {
     );
   });
 
-  await t.test('Client users cannot write or delete audit_logs', async () => {
+  await t.test('Active users can append their own audit logs but cannot mutate them', async () => {
     const officerDb = testEnv.authenticatedContext('officer_1').firestore();
-    await assertFails(
-      setDoc(doc(officerDb, 'audit_logs', 'fake_log'), {
-        action: 'TAMPER',
+    const auditRef = doc(officerDb, 'audit_logs', 'valid_log');
+    await assertSucceeds(
+      setDoc(auditRef, {
+        branchId: 'ABS',
+        userId: 'officer_1',
+        actorUid: 'officer_1',
+        actorName: 'Officer',
+        actorRole: 'DISBURSEMENT_OFFICER',
+        action: 'DISBURSEMENT_RECORDED',
+        entityType: 'DISBURSEMENT',
+        entityId: 'payment_1',
+        timestamp: new Date().toISOString(),
       })
     );
+    await assertFails(updateDoc(auditRef, { action: 'TAMPER' }));
+    await assertFails(deleteDoc(auditRef));
   });
 
   await t.test('Cross-branch user is blocked from reading Abu Simbel requests', async () => {

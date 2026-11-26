@@ -10,29 +10,156 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
-    function isActiveBranchUser() {
+    function requestPath(requestId) {
+      return /databases/$(database)/documents/requests/$(requestId);
+    }
+
+    function userExists() {
       return isSignedIn()
-        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isActiveBranchUser() {
+      return userExists()
         && userDoc().isActive == true
         && userDoc().branchId == 'ABS';
     }
 
     function hasAnyRole(allowedRoles) {
-      return isActiveBranchUser() && userDoc().roles.hasAny(allowedRoles);
+      return isActiveBranchUser()
+        && userDoc().roles is list
+        && userDoc().roles.hasAny(allowedRoles);
+    }
+
+    function isAdmin() {
+      return hasAnyRole(['ADMIN']);
+    }
+
+    function isRequestOwner() {
+      return resource.data.createdBy == request.auth.uid;
+    }
+
+    function canSubmitRequest() {
+      return hasAnyRole(['REQUESTER', 'ADMIN'])
+        && resource.data.branchId == 'ABS'
+        && (isRequestOwner() || isAdmin())
+        && resource.data.status in ['DRAFT', 'REJECTED']
+        && request.resource.data.status == 'PENDING_MANAGER'
+        && request.resource.data.branchId == 'ABS'
+        && request.resource.data.approvalSnapshot is map
+        && request.resource.data.requestNumber is string
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'requestNumber',
+          'status',
+          'approvedAmount',
+          'totalPaidAmount',
+          'remainingAmount',
+          'approvalSnapshot',
+          'submittedAt',
+          'updatedAt'
+        ]);
+    }
+
+    function canApproveRequest() {
+      return resource.data.branchId == 'ABS'
+        && (
+          (
+            resource.data.status == 'PENDING_MANAGER'
+            && request.resource.data.status in ['PENDING_FINANCE', 'REJECTED']
+            && (
+              isAdmin()
+              || (
+                hasAnyRole(['MANAGER'])
+                && resource.data.approvalSnapshot.assignedManagerIds.hasAny([request.auth.uid])
+              )
+            )
+          )
+          || (
+            resource.data.status == 'PENDING_FINANCE'
+            && request.resource.data.status in ['READY_FOR_PAYMENT', 'REJECTED']
+            && (
+              isAdmin()
+              || (
+                hasAnyRole(['FINANCE_MANAGER'])
+                && resource.data.approvalSnapshot.assignedFinanceManagerIds.hasAny([request.auth.uid])
+              )
+            )
+          )
+        )
+        && request.resource.data.approvalHistory is list
+        && request.resource.data.approvalHistory.size() == resource.data.approvalHistory.size() + 1
+        && request.resource.data.approvalHistory[request.resource.data.approvalHistory.size() - 1].actorId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'approvedAmount',
+          'remainingAmount',
+          'approvalHistory',
+          'updatedAt'
+        ]);
+    }
+
+    function canUpdateDisbursementTotals() {
+      return hasAnyRole(['DISBURSEMENT_OFFICER', 'ADMIN'])
+        && resource.data.branchId == 'ABS'
+        && request.resource.data.branchId == 'ABS'
+        && resource.data.status in ['READY_FOR_PAYMENT', 'PARTIALLY_PAID', 'PAID']
+        && request.resource.data.status in ['READY_FOR_PAYMENT', 'PARTIALLY_PAID', 'PAID']
+        && request.resource.data.approvedAmount == resource.data.approvedAmount
+        && request.resource.data.totalPaidAmount is number
+        && request.resource.data.remainingAmount is number
+        && request.resource.data.totalPaidAmount >= 0
+        && request.resource.data.totalPaidAmount <= resource.data.approvedAmount
+        && request.resource.data.remainingAmount >= 0
+        && (
+          (
+            request.resource.data.totalPaidAmount > resource.data.totalPaidAmount
+            && resource.data.status in ['READY_FOR_PAYMENT', 'PARTIALLY_PAID']
+            && request.resource.data.status in ['PARTIALLY_PAID', 'PAID']
+          )
+          || (
+            request.resource.data.totalPaidAmount < resource.data.totalPaidAmount
+            && resource.data.status in ['PARTIALLY_PAID', 'PAID']
+            && request.resource.data.status in ['READY_FOR_PAYMENT', 'PARTIALLY_PAID']
+          )
+        )
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'totalPaidAmount',
+          'remainingAmount',
+          'status',
+          'chequeDetails',
+          'updatedAt'
+        ]);
     }
 
     match /users/{userId} {
       allow read: if isActiveBranchUser();
-      allow create, update, delete: if false;
+      allow create: if isAdmin()
+        && request.resource.data.uid == userId
+        && request.resource.data.branchId == 'ABS'
+        && request.resource.data.isActive == true
+        && request.resource.data.roles is list;
+      allow update: if isAdmin()
+        && resource.data.branchId == 'ABS'
+        && request.resource.data.branchId == 'ABS'
+        && request.resource.data.uid == userId;
+      allow delete: if false;
     }
 
     match /settings/{settingId} {
       allow read: if isActiveBranchUser();
-      allow write: if false;
+      allow create, update: if isAdmin()
+        && settingId == 'approval_chain'
+        && request.resource.data.branchId == 'ABS'
+        && request.resource.data.version is int;
+      allow delete: if false;
     }
 
     match /counters/{counterId} {
-      allow read, write: if false;
+      allow read: if hasAnyRole(['REQUESTER', 'ADMIN']);
+      allow create, update: if hasAnyRole(['REQUESTER', 'ADMIN'])
+        && request.resource.data.branchId == 'ABS'
+        && request.resource.data.lastSeq is int;
+      allow delete: if false;
     }
 
     match /customers/{customerId} {
@@ -61,32 +188,117 @@ service cloud.firestore {
         && request.resource.data.approvedAmount == 0
         && request.resource.data.totalPaidAmount == 0;
 
-      allow update: if hasAnyRole(['REQUESTER', 'ADMIN'])
+      allow update: if (
+        hasAnyRole(['REQUESTER', 'ADMIN'])
+        && isRequestOwner()
         && resource.data.branchId == 'ABS'
-        && resource.data.createdBy == request.auth.uid
         && resource.data.status == 'DRAFT'
         && request.resource.data.status == 'DRAFT'
         && request.resource.data.createdBy == resource.data.createdBy
         && request.resource.data.requestNumber == resource.data.requestNumber
         && request.resource.data.approvedAmount == 0
-        && request.resource.data.totalPaidAmount == 0;
+        && request.resource.data.totalPaidAmount == 0
+      ) || canSubmitRequest() || canApproveRequest() || canUpdateDisbursementTotals();
 
       allow delete: if false;
     }
 
     match /approvals/{approvalId} {
       allow read: if isActiveBranchUser();
-      allow write: if false;
+      allow create: if isActiveBranchUser()
+        && request.resource.data.branchId == 'ABS'
+        && request.resource.data.actorId == request.auth.uid
+        && exists(requestPath(request.resource.data.requestId))
+        && get(requestPath(request.resource.data.requestId)).data.branchId == 'ABS'
+        && (
+          (
+            request.resource.data.stage == 'MANAGER'
+            && get(requestPath(request.resource.data.requestId)).data.status == 'PENDING_MANAGER'
+            && (
+              isAdmin()
+              || (
+                hasAnyRole(['MANAGER'])
+                && get(requestPath(request.resource.data.requestId)).data.approvalSnapshot.assignedManagerIds.hasAny([request.auth.uid])
+              )
+            )
+          )
+          || (
+            request.resource.data.stage == 'FINANCE_MANAGER'
+            && get(requestPath(request.resource.data.requestId)).data.status == 'PENDING_FINANCE'
+            && (
+              isAdmin()
+              || (
+                hasAnyRole(['FINANCE_MANAGER'])
+                && get(requestPath(request.resource.data.requestId)).data.approvalSnapshot.assignedFinanceManagerIds.hasAny([request.auth.uid])
+              )
+            )
+          )
+        )
+        && getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory.size()
+          == get(requestPath(request.resource.data.requestId)).data.approvalHistory.size() + 1
+        && getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory[
+          getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory.size() - 1
+        ].actorId == request.auth.uid
+        && getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory[
+          getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory.size() - 1
+        ].stage == request.resource.data.stage
+        && getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory[
+          getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory.size() - 1
+        ].decision == request.resource.data.decision
+        && getAfter(requestPath(request.resource.data.requestId)).data.status == (
+          request.resource.data.stage == 'MANAGER'
+            ? (request.resource.data.decision == 'APPROVED' ? 'PENDING_FINANCE' : 'REJECTED')
+            : (request.resource.data.decision == 'APPROVED' ? 'READY_FOR_PAYMENT' : 'REJECTED')
+        );
+      allow update, delete: if false;
     }
 
     match /disbursements/{disbursementId} {
       allow read: if hasAnyRole(['ADMIN', 'FINANCE_MANAGER', 'DISBURSEMENT_OFFICER', 'AUDITOR', 'MANAGER']);
-      allow write: if false;
+      allow create: if hasAnyRole(['DISBURSEMENT_OFFICER', 'ADMIN'])
+        && request.resource.data.branchId == 'ABS'
+        && request.resource.data.disbursedBy == request.auth.uid
+        && request.resource.data.amount is number
+        && exists(requestPath(request.resource.data.requestId))
+        && get(requestPath(request.resource.data.requestId)).data.branchId == 'ABS'
+        && getAfter(requestPath(request.resource.data.requestId)).data.totalPaidAmount
+          >= get(requestPath(request.resource.data.requestId)).data.totalPaidAmount + request.resource.data.amount - 0.0001
+        && getAfter(requestPath(request.resource.data.requestId)).data.totalPaidAmount
+          <= get(requestPath(request.resource.data.requestId)).data.totalPaidAmount + request.resource.data.amount + 0.0001
+        && getAfter(requestPath(request.resource.data.requestId)).data.remainingAmount
+          >= getAfter(requestPath(request.resource.data.requestId)).data.approvedAmount
+            - getAfter(requestPath(request.resource.data.requestId)).data.totalPaidAmount - 0.0001
+        && getAfter(requestPath(request.resource.data.requestId)).data.remainingAmount
+          <= getAfter(requestPath(request.resource.data.requestId)).data.approvedAmount
+            - getAfter(requestPath(request.resource.data.requestId)).data.totalPaidAmount + 0.0001
+        && getAfter(requestPath(request.resource.data.requestId)).data.status == (
+          getAfter(requestPath(request.resource.data.requestId)).data.remainingAmount == 0
+            ? 'PAID'
+            : (getAfter(requestPath(request.resource.data.requestId)).data.totalPaidAmount == 0
+              ? 'READY_FOR_PAYMENT'
+              : 'PARTIALLY_PAID')
+        )
+        && (
+          (
+            request.resource.data.isReversal == false
+            && request.resource.data.amount > 0
+          )
+          || (
+            request.resource.data.isReversal == true
+            && request.resource.data.amount < 0
+            && request.resource.data.reversesPaymentId is string
+          )
+        );
+      allow update, delete: if false;
     }
 
     match /audit_logs/{logId} {
       allow read: if hasAnyRole(['ADMIN', 'AUDITOR']);
-      allow write: if false;
+      allow create: if isActiveBranchUser()
+        && request.resource.data.branchId == 'ABS'
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.actorUid == request.auth.uid;
+      allow update, delete: if false;
     }
 
     match /notifications/{notificationId} {

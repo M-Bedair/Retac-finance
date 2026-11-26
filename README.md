@@ -1,14 +1,13 @@
 # RETAC – Petty Cash & Cheque Management System
 **Branch:** Abu Simbel – Egypt (`ABS`) | **Version:** 1.0
 
-Enterprise financial control system built with **React + TypeScript + Tailwind CSS** and **Firebase (Auth, Firestore, Cloud Functions, Storage, Hosting)**.
+Enterprise financial control system built with **React + TypeScript + Tailwind CSS** and **Firebase Spark-compatible services (Authentication, Cloud Firestore, and Hosting)**. Financial workflows run in client-side Firestore transactions; the app does not require Cloud Functions or Firebase Storage.
 
 ## Quick Start (Local Development & Emulators)
 
 1. **Install Dependencies**
    ```bash
    npm install
-   cd functions && npm install && cd ..
    ```
 
 2. **Configure Environment**

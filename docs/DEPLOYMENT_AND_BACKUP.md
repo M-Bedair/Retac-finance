@@ -15,11 +15,13 @@
    ```
 3. Log in to the web app, navigate to **System Settings**, provision branch staff, and configure the active **Approval Chain**.
 
-## 2. Production Deployment
+## 2. Production Deployment (Firebase Spark)
 ```bash
 npm run build
-firebase deploy --only firestore:rules,firestore:indexes,storage,functions,hosting
+firebase deploy --only firestore:rules,firestore:indexes,hosting
 ```
+
+The client application requires Firebase Authentication, Cloud Firestore, and Firebase Hosting. It does not deploy Cloud Functions or Firebase Storage. Client-side Firestore rules authorize reads and writes using the active `ABS` branch user profile and its roles.
 
 ## 3. Backup & Point-in-Time Recovery (PITR)
 1. Enable **Firestore Point-in-Time Recovery (PITR)** in Google Cloud Console for 7-day granularity.

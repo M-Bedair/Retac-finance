@@ -1,8 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { collection, doc, onSnapshot, orderBy, query, where } from 'firebase/firestore';
-import { httpsCallable } from 'firebase/functions';
-import { db, functions } from '../../config/firebase';
+import { db } from '../../config/firebase';
+import { useAuth } from '../../contexts/AuthContext';
 import { UserProfile, UserRole } from '../../types/domain';
+import {
+  provisionUserSpark,
+  updateApprovalChainConfigSpark,
+} from '../../services/sparkOperations';
 
 const ALL_ROLES: UserRole[] = [
   'ADMIN',
@@ -14,6 +18,7 @@ const ALL_ROLES: UserRole[] = [
 ];
 
 export const SettingsPage: React.FC = () => {
+  const { profile } = useAuth();
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [managerIds, setManagerIds] = useState<string[]>([]);
   const [financeIds, setFinanceIds] = useState<string[]>([]);
@@ -68,12 +73,13 @@ export const SettingsPage: React.FC = () => {
     setSavingChain(true);
     setMessage(null);
     try {
-      const updateFn = httpsCallable(functions, 'updateApprovalChainConfig');
-      await updateFn({
+      if (!profile) throw new Error('You must be signed in to update settings.');
+      await updateApprovalChainConfigSpark({
         managerUserIds: managerIds,
         financeManagerUserIds: financeIds,
         enabled,
         reason,
+        user: profile,
       });
       setReason('');
       setMessage('Approval chain updated and version snapshot recorded in audit logs.');
@@ -89,8 +95,8 @@ export const SettingsPage: React.FC = () => {
     setCreatingUser(true);
     setMessage(null);
     try {
-      const provFn = httpsCallable(functions, 'provisionUser');
-      await provFn(newUser);
+      if (!profile) throw new Error('You must be signed in to provision a user.');
+      await provisionUserSpark({ ...newUser, adminUser: profile });
       setNewUser({
         email: '',
         password: '',
@@ -99,7 +105,7 @@ export const SettingsPage: React.FC = () => {
         department: 'Finance',
         roles: ['REQUESTER'],
       });
-      setMessage('User provisioned with Firebase Auth custom claims.');
+      setMessage('User provisioned in Firebase Authentication and the branch directory.');
     } catch (err: unknown) {
       setMessage(err instanceof Error ? err.message : 'User provisioning failed');
     } finally {

@@ -1,13 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { collection, onSnapshot, orderBy, query, where } from 'firebase/firestore';
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
-import { httpsCallable } from 'firebase/functions';
-import { db, functions, storage } from '../../config/firebase';
+import { db } from '../../config/firebase';
+import { useAuth } from '../../contexts/AuthContext';
 import { DisbursementRecord, FinancialRequest } from '../../types/domain';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { RotateCcw, Wallet } from 'lucide-react';
+import {
+  recordDisbursementSpark,
+  reverseDisbursementSpark,
+} from '../../services/sparkOperations';
 
 export const DisbursementsPage: React.FC = () => {
+  const { profile } = useAuth();
   const [eligible, setEligible] = useState<FinancialRequest[]>([]);
   const [ledger, setLedger] = useState<DisbursementRecord[]>([]);
   const [selectedReq, setSelectedReq] = useState<FinancialRequest | null>(null);
@@ -19,7 +23,6 @@ export const DisbursementsPage: React.FC = () => {
   const [bankName, setBankName] = useState('');
   const [chequeDate, setChequeDate] = useState('');
   const [notes, setNotes] = useState('');
-  const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -62,7 +65,6 @@ export const DisbursementsPage: React.FC = () => {
     setChequeDate(req.chequeDetails?.chequeDate || '');
     setTransactionReference('');
     setNotes('');
-    setReceiptFile(null);
     setError(null);
   };
 
@@ -73,19 +75,9 @@ export const DisbursementsPage: React.FC = () => {
     setError(null);
 
     try {
-      let receiptUrl: string | null = null;
-      if (receiptFile) {
-        const path = `branches/ABS/disbursements/${selectedReq.id}/${Date.now()}_${receiptFile.name}`;
-        const sRef = ref(storage, path);
-        await uploadBytes(sRef, receiptFile);
-        receiptUrl = await getDownloadURL(sRef);
-      }
-
-      const idempotencyKey = `${selectedReq.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const disburseFn = httpsCallable(functions, 'recordDisbursement');
-      await disburseFn({
+      if (!profile) throw new Error('You must be signed in to record a disbursement.');
+      await recordDisbursementSpark({
         requestId: selectedReq.id,
-        idempotencyKey,
         amount: Number(amount),
         paymentDate,
         paymentMethod,
@@ -99,8 +91,8 @@ export const DisbursementsPage: React.FC = () => {
                 payeeName: selectedReq.chequeDetails?.payeeName || selectedReq.beneficiaryName,
               }
             : null,
-        receiptUrl,
         notes,
+        user: profile,
       });
 
       setSelectedReq(null);
@@ -115,8 +107,8 @@ export const DisbursementsPage: React.FC = () => {
     const reason = window.prompt('Enter mandatory audit reason for reversing this payment:');
     if (!reason || reason.trim().length < 5) return;
     try {
-      const revFn = httpsCallable(functions, 'reverseDisbursement');
-      await revFn({ paymentId, reason });
+      if (!profile) throw new Error('You must be signed in to reverse a disbursement.');
+      await reverseDisbursementSpark({ paymentId, reason, user: profile });
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : 'Reversal failed');
     }
@@ -235,11 +227,6 @@ export const DisbursementsPage: React.FC = () => {
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               className="px-3 py-2 rounded-lg border border-slate-300 text-xs"
-            />
-            <input
-              type="file"
-              onChange={(e) => setReceiptFile(e.target.files?.[0] || null)}
-              className="text-xs"
             />
           </div>
 

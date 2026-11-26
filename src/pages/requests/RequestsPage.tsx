@@ -2,26 +2,22 @@ import React, { useEffect, useState } from 'react';
 import {
   addDoc,
   collection,
-  doc,
   onSnapshot,
   orderBy,
   query,
-  updateDoc,
   where,
 } from 'firebase/firestore';
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
-import { httpsCallable } from 'firebase/functions';
-import { db, functions, storage } from '../../config/firebase';
+import { db } from '../../config/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import {
-  AttachmentMeta,
   CurrencyCode,
   Customer,
   FinancialRequest,
   RequestType,
 } from '../../types/domain';
 import { StatusBadge } from '../../components/common/StatusBadge';
-import { Plus, Send, Upload } from 'lucide-react';
+import { Plus, Send } from 'lucide-react';
+import { submitFinancialRequestSpark } from '../../services/sparkOperations';
 
 export const RequestsPage: React.FC = () => {
   const { profile, hasRole } = useAuth();
@@ -43,7 +39,6 @@ export const RequestsPage: React.FC = () => {
   const [bankName, setBankName] = useState('');
   const [chequeDate, setChequeDate] = useState('');
   const [payeeName, setPayeeName] = useState('');
-  const [filesToUpload, setFilesToUpload] = useState<FileList | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -161,36 +156,13 @@ export const RequestsPage: React.FC = () => {
         updatedAt: now,
       });
 
-      if (filesToUpload && filesToUpload.length > 0) {
-        const uploaded: AttachmentMeta[] = [];
-        for (const file of Array.from(filesToUpload)) {
-          const storagePath = `branches/ABS/requests/${draftRef.id}/${Date.now()}_${file.name}`;
-          const storageRef = ref(storage, storagePath);
-          await uploadBytes(storageRef, file);
-          const downloadUrl = await getDownloadURL(storageRef);
-          uploaded.push({
-            id: `${Date.now()}_${file.name}`,
-            fileName: file.name,
-            storagePath,
-            downloadUrl,
-            contentType: file.type,
-            sizeBytes: file.size,
-            uploadedBy: profile.uid,
-            uploadedAt: new Date().toISOString(),
-          });
-        }
-        await updateDoc(doc(db, 'requests', draftRef.id), { attachments: uploaded });
-      }
-
       if (autoSubmit) {
-        const submitFn = httpsCallable(functions, 'submitFinancialRequest');
-        await submitFn({ requestId: draftRef.id });
+        await submitFinancialRequestSpark(draftRef.id, profile);
       }
 
       setShowCreate(false);
       setRequestedAmount('');
       setPurpose('');
-      setFilesToUpload(null);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to create request');
     } finally {
@@ -202,8 +174,8 @@ export const RequestsPage: React.FC = () => {
     setSubmittingId(id);
     setError(null);
     try {
-      const submitFn = httpsCallable(functions, 'submitFinancialRequest');
-      await submitFn({ requestId: id });
+      if (!profile) throw new Error('You must be signed in to submit a request.');
+      await submitFinancialRequestSpark(id, profile);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Submission failed');
     } finally {
@@ -392,19 +364,6 @@ export const RequestsPage: React.FC = () => {
               onChange={(e) => setPurpose(e.target.value)}
               className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs"
             />
-          </div>
-
-          <div>
-            <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
-              <Upload className="w-4 h-4 text-retac-navy" />
-              <span>Supporting Documents (PDF / Images)</span>
-              <input
-                type="file"
-                multiple
-                onChange={(e) => setFilesToUpload(e.target.files)}
-                className="text-xs"
-              />
-            </label>
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
