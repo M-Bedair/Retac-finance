@@ -1,0 +1,100 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isActiveBranchUser() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && userDoc().isActive == true
+        && userDoc().branchId == 'ABS';
+    }
+
+    function hasAnyRole(allowedRoles) {
+      return isActiveBranchUser() && userDoc().roles.hasAny(allowedRoles);
+    }
+
+    match /users/{userId} {
+      allow read: if isActiveBranchUser();
+      allow create, update, delete: if false;
+    }
+
+    match /settings/{settingId} {
+      allow read: if isActiveBranchUser();
+      allow write: if false;
+    }
+
+    match /counters/{counterId} {
+      allow read, write: if false;
+    }
+
+    match /customers/{customerId} {
+      allow read: if isActiveBranchUser();
+      allow create: if hasAnyRole(['ADMIN', 'REQUESTER'])
+        && request.resource.data.branchId == 'ABS'
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 1;
+      allow update: if hasAnyRole(['ADMIN'])
+        && request.resource.data.branchId == 'ABS';
+      allow delete: if false;
+    }
+
+    match /requests/{requestId} {
+      allow read: if isActiveBranchUser() && (
+        hasAnyRole(['ADMIN', 'MANAGER', 'FINANCE_MANAGER', 'DISBURSEMENT_OFFICER', 'AUDITOR'])
+        || resource.data.createdBy == request.auth.uid
+      );
+
+      allow create: if hasAnyRole(['REQUESTER', 'ADMIN'])
+        && request.resource.data.branchId == 'ABS'
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.status == 'DRAFT'
+        && request.resource.data.requestedAmount is number
+        && request.resource.data.requestedAmount > 0
+        && request.resource.data.approvedAmount == 0
+        && request.resource.data.totalPaidAmount == 0;
+
+      allow update: if hasAnyRole(['REQUESTER', 'ADMIN'])
+        && resource.data.branchId == 'ABS'
+        && resource.data.createdBy == request.auth.uid
+        && resource.data.status == 'DRAFT'
+        && request.resource.data.status == 'DRAFT'
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.requestNumber == resource.data.requestNumber
+        && request.resource.data.approvedAmount == 0
+        && request.resource.data.totalPaidAmount == 0;
+
+      allow delete: if false;
+    }
+
+    match /approvals/{approvalId} {
+      allow read: if isActiveBranchUser();
+      allow write: if false;
+    }
+
+    match /disbursements/{disbursementId} {
+      allow read: if hasAnyRole(['ADMIN', 'FINANCE_MANAGER', 'DISBURSEMENT_OFFICER', 'AUDITOR', 'MANAGER']);
+      allow write: if false;
+    }
+
+    match /audit_logs/{logId} {
+      allow read: if hasAnyRole(['ADMIN', 'AUDITOR']);
+      allow write: if false;
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isActiveBranchUser() && resource.data.userId == request.auth.uid;
+      allow update: if isActiveBranchUser()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'readAt']);
+      allow create, delete: if false;
+    }
+  }
+}
