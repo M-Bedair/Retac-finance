@@ -6,12 +6,14 @@ import { FinancialRequest } from '../../types/domain';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { Check, X } from 'lucide-react';
 import { processApprovalDecisionSpark } from '../../services/sparkOperations';
+import { useI18n } from '../../contexts/I18nContext';
 
 interface ApprovalWorkspaceProps {
   stage: 'MANAGER' | 'FINANCE_MANAGER';
 }
 
 export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage }) => {
+  const { t, lang } = useI18n();
   const { profile, hasRole } = useAuth();
   const [queue, setQueue] = useState<FinancialRequest[]>([]);
   const [comments, setComments] = useState<Record<string, string>>({});
@@ -50,14 +52,14 @@ export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage 
     setError(null);
     const comment = (comments[req.id] || '').trim();
     if (decision === 'REJECTED' && comment.length < 3) {
-      setError('A mandatory rejection reason (at least 3 characters) is required.');
+      setError(t('rejectionReasonRequired'));
       return;
     }
 
     setBusyId(req.id);
     try {
       const customAmt = approvedAmounts[req.id];
-      if (!profile) throw new Error('You must be signed in to approve requests.');
+      if (!profile) throw new Error(t('signInApproveError'));
       await processApprovalDecisionSpark({
         requestId: req.id,
         stage,
@@ -70,7 +72,7 @@ export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage 
         user: profile,
       });
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Approval action failed');
+      setError(err instanceof Error ? err.message : t('approvalFailed'));
     } finally {
       setBusyId(null);
     }
@@ -80,10 +82,10 @@ export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage 
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-bold text-retac-navy">
-          {stage === 'MANAGER' ? 'Manager Approval Workspace' : 'Finance Manager Approval Workspace'}
+          {stage === 'MANAGER' ? t('approvalWorkspaceManager') : t('approvalWorkspaceFinance')}
         </h2>
         <p className="text-xs text-slate-500">
-          Segregation of duties enforced: self-approval and dual-stage single-person approval are blocked.
+          {t('approvalSeparationNotice')}
         </p>
       </div>
 
@@ -95,7 +97,7 @@ export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage 
 
       {queue.length === 0 ? (
         <div className="bg-white p-10 rounded-xl border border-slate-200 text-center text-xs text-slate-500">
-          No requests currently assigned to your queue.
+          {t('noAssignedRequests')}
         </div>
       ) : (
         <div className="space-y-4">
@@ -108,7 +110,7 @@ export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage 
                 <div>
                   <span className="font-bold text-retac-navy text-sm">{req.requestNumber}</span>
                   <span className="ms-2 text-xs text-slate-500">
-                    ({req.requestType}) • Requested by {req.createdByName}
+                    ({req.requestType === 'CHEQUE' ? t('cheque') : t('pettyCash')}) • {t('requestedBy')} {req.createdByName}
                   </span>
                 </div>
                 <StatusBadge status={req.status} />
@@ -116,19 +118,19 @@ export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage 
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
                 <div>
-                  <span className="text-slate-500 block">Customer / Beneficiary</span>
+                  <span className="text-slate-500 block">{t('customerBeneficiary')}</span>
                   <span className="font-semibold text-retac-navy">
                     {req.customerSnapshot?.name} — {req.beneficiaryName}
                   </span>
                 </div>
                 <div>
-                  <span className="text-slate-500 block">Category & Date</span>
+                  <span className="text-slate-500 block">{t('categoryAndDate')}</span>
                   <span className="font-semibold">
                     {req.expenseCategory} ({req.requestDate})
                   </span>
                 </div>
                 <div>
-                  <span className="text-slate-500 block">Requested Amount</span>
+                  <span className="text-slate-500 block">{t('requestedAmount')}</span>
                   <span className="font-bold text-base text-retac-navy font-mono">
                     {req.requestedAmount.toFixed(2)} {req.currency}
                   </span>
@@ -155,11 +157,11 @@ export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage 
 
               {req.approvalHistory?.length > 0 && (
                 <div className="text-[11px] text-slate-600 border-t border-slate-100 pt-2 space-y-1">
-                  <span className="font-semibold block">Approval Timeline:</span>
+                  <span className="font-semibold block">{t('approvalTimeline')}</span>
                   {req.approvalHistory.map((h, i) => (
                     <div key={i}>
-                      • [{h.stage}] {h.decision} by {h.actorName} at{' '}
-                      {new Date(h.decidedAt).toLocaleString()}
+                      • [{h.stage === 'MANAGER' ? t('managerStage') : t('financeManagerStage')}] {h.decision === 'APPROVED' ? t('approvedDecision') : t('rejectedDecision')} {t('decidedBy')} {h.actorName}{' '}
+                      {new Date(h.decidedAt).toLocaleString(lang === 'ar' ? 'ar-EG-u-nu-latn' : 'en-EG')}
                       {h.comment ? ` — "${h.comment}"` : ''}
                     </div>
                   ))}
@@ -172,7 +174,7 @@ export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage 
                     type="number"
                     step="0.01"
                     max={req.requestedAmount}
-                    placeholder={`Approved Amt (default ${req.requestedAmount})`}
+                    placeholder={t('approvedAmountPlaceholder', { amount: req.requestedAmount })}
                     value={approvedAmounts[req.id] ?? ''}
                     onChange={(e) =>
                       setApprovedAmounts({ ...approvedAmounts, [req.id]: e.target.value })
@@ -181,7 +183,7 @@ export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage 
                   />
                 )}
                 <input
-                  placeholder="Comments / Mandatory rejection reason..."
+                  placeholder={t('commentsPlaceholder')}
                   value={comments[req.id] ?? ''}
                   onChange={(e) => setComments({ ...comments, [req.id]: e.target.value })}
                   className="flex-1 px-3 py-2 rounded-lg border border-slate-300 text-xs"
@@ -193,7 +195,7 @@ export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage 
                     className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-emerald-700 text-white text-xs font-semibold hover:bg-emerald-800 disabled:opacity-50"
                   >
                     <Check className="w-4 h-4" />
-                    <span>Approve</span>
+                    <span>{t('approve')}</span>
                   </button>
                   <button
                     disabled={busyId === req.id}
@@ -201,7 +203,7 @@ export const ApprovalWorkspacePage: React.FC<ApprovalWorkspaceProps> = ({ stage 
                     className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-rose-700 text-white text-xs font-semibold hover:bg-rose-800 disabled:opacity-50"
                   >
                     <X className="w-4 h-4" />
-                    <span>Reject</span>
+                    <span>{t('reject')}</span>
                   </button>
                 </div>
               </div>

@@ -83,12 +83,12 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
           {notifOpen && (
             <div className="absolute end-0 mt-2 w-80 bg-white rounded-xl border border-slate-200 shadow-lg z-50 overflow-hidden">
               <div className="px-4 py-2.5 bg-retac-navy text-white text-xs font-semibold flex justify-between">
-                <span>Notifications</span>
-                <span>{unreadCount} unread</span>
+                <span>{t('notifications')}</span>
+                <span>{t('unreadCount', { count: unreadCount })}</span>
               </div>
               <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
                 {notifications.length === 0 ? (
-                  <p className="p-4 text-xs text-slate-500 text-center">No notifications</p>
+                  <p className="p-4 text-xs text-slate-500 text-center">{t('noNotifications')}</p>
                 ) : (
                   notifications.map((n) => (
                     <button

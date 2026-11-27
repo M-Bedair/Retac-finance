@@ -1,34 +1,92 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-
     function isSignedIn() {
       return request.auth != null;
     }
 
-    function userDoc() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    function userPath(userId) {
+      return /databases/$(database)/documents/users/$(userId);
     }
 
     function requestPath(requestId) {
       return /databases/$(database)/documents/requests/$(requestId);
     }
 
+    function approvalPath(approvalId) {
+      return /databases/$(database)/documents/approvals/$(approvalId);
+    }
+
+    function disbursementPath(disbursementId) {
+      return /databases/$(database)/documents/disbursements/$(disbursementId);
+    }
+
+    function counterPath(counterId) {
+      return /databases/$(database)/documents/counters/$(counterId);
+    }
+
+    function counterBackedBySubmittedRequest(counterId) {
+      let submittedRequest = getAfter(requestPath(request.resource.data.lastRequestId)).data;
+      let parts = submittedRequest.requestNumber.split('-');
+      return request.resource.data.lastRequestId is string
+        && submittedRequest.branchId == 'ABS'
+        && submittedRequest.status == 'PENDING_MANAGER'
+        && submittedRequest.requestNumber.matches('^ABS-(PC|CH)-[0-9]{4}-[0-9]{5}$')
+        && counterId == 'ABS_' + parts[1] + '_' + parts[2]
+        && int(parts[3]) == request.resource.data.lastSeq;
+    }
+
+    function validSubmissionCounter() {
+      let parts = request.resource.data.requestNumber.split('-');
+      let counterId = 'ABS_' + parts[1] + '_' + parts[2];
+      let counterBefore = get(counterPath(counterId));
+      let counterAfter = getAfter(counterPath(counterId));
+      return request.resource.data.requestNumber.matches('^ABS-(PC|CH)-[0-9]{4}-[0-9]{5}$')
+        && parts[1] == (request.resource.data.requestType == 'CHEQUE' ? 'CH' : 'PC')
+        && int(parts[3]) == counterAfter.data.lastSeq
+        && counterAfter.data.lastRequestId == resource.id
+        && (
+          (!exists(counterPath(counterId)) && counterAfter.data.lastSeq == 1)
+          || (
+            exists(counterPath(counterId))
+            && counterAfter.data.lastSeq == (
+              counterBefore.data.keys().hasAny(['lastSeq'])
+                ? counterBefore.data.lastSeq
+                : counterBefore.data.seq
+            ) + 1
+          )
+        );
+    }
+
+    function validOriginalPaymentForReversal(payment, requestId) {
+      let original = get(disbursementPath(payment.reversesPaymentId)).data;
+      return payment.reversesPaymentId is string
+        && exists(disbursementPath(payment.reversesPaymentId))
+        && original.id == payment.reversesPaymentId
+        && original.isReversal == false
+        && original.requestId == requestId
+        && original.amount > 0
+        && payment.amount >= -original.amount - 0.0001
+        && payment.amount <= -original.amount + 0.0001;
+    }
+
     function userExists() {
-      return isSignedIn()
-        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+      return isSignedIn() && exists(userPath(request.auth.uid));
+    }
+
+    function userDoc() {
+      return get(userPath(request.auth.uid)).data;
     }
 
     function isActiveBranchUser() {
       return userExists()
         && userDoc().isActive == true
-        && userDoc().branchId == 'ABS';
+        && userDoc().branchId == 'ABS'
+        && userDoc().roles is list;
     }
 
     function hasAnyRole(allowedRoles) {
-      return isActiveBranchUser()
-        && userDoc().roles is list
-        && userDoc().roles.hasAny(allowedRoles);
+      return isActiveBranchUser() && userDoc().roles.hasAny(allowedRoles);
     }
 
     function isAdmin() {
@@ -40,6 +98,9 @@ service cloud.firestore {
     }
 
     function canSubmitRequest() {
+      let config = get(
+        /databases/$(database)/documents/settings/approval_chain
+      ).data;
       return hasAnyRole(['REQUESTER', 'ADMIN'])
         && resource.data.branchId == 'ABS'
         && (isRequestOwner() || isAdmin())
@@ -47,7 +108,22 @@ service cloud.firestore {
         && request.resource.data.status == 'PENDING_MANAGER'
         && request.resource.data.branchId == 'ABS'
         && request.resource.data.approvalSnapshot is map
-        && request.resource.data.requestNumber is string
+        && request.resource.data.approvalSnapshot.assignedManagerIds is list
+        && request.resource.data.approvalSnapshot.assignedFinanceManagerIds is list
+        && request.resource.data.approvalSnapshot.assignedManagerIds.size() > 0
+        && request.resource.data.approvalSnapshot.assignedFinanceManagerIds.size() > 0
+        && config.enabled == true
+        && request.resource.data.approvalSnapshot.assignedManagerIds == config.managerUserIds
+        && request.resource.data.approvalSnapshot.assignedFinanceManagerIds == config.financeManagerUserIds
+        && request.resource.data.approvalSnapshot.configVersion == config.version
+        && (
+          (
+            resource.data.status == 'REJECTED'
+            && !resource.data.requestNumber.matches('^DRAFT-.*$')
+            && request.resource.data.requestNumber == resource.data.requestNumber
+          )
+          || validSubmissionCounter()
+        )
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'requestNumber',
           'status',
@@ -61,34 +137,69 @@ service cloud.firestore {
     }
 
     function canApproveRequest() {
+      let history = request.resource.data.approvalHistory;
+      let last = history[history.size() - 1];
+      let managerStage = resource.data.status == 'PENDING_MANAGER';
+      let priorManagerDecision = resource.data.approvalHistory[
+        resource.data.approvalHistory.size() - 1
+      ];
+      let approval = getAfter(approvalPath(last.approvalId)).data;
       return resource.data.branchId == 'ABS'
+        && resource.data.approvalHistory is list
+        && history is list
+        && history.size() == resource.data.approvalHistory.size() + 1
+        && last.actorId == request.auth.uid
+        && last.stage == (managerStage ? 'MANAGER' : 'FINANCE_MANAGER')
+        && last.decision in ['APPROVED', 'REJECTED']
+        && request.resource.data.approvedAmount is number
+        && request.resource.data.remainingAmount is number
+        && request.resource.data.status == (
+          last.stage == 'MANAGER'
+            ? (last.decision == 'APPROVED' ? 'PENDING_FINANCE' : 'REJECTED')
+            : (last.decision == 'APPROVED' ? 'READY_FOR_PAYMENT' : 'REJECTED')
+        )
         && (
           (
-            resource.data.status == 'PENDING_MANAGER'
-            && request.resource.data.status in ['PENDING_FINANCE', 'REJECTED']
-            && (
-              isAdmin()
-              || (
-                hasAnyRole(['MANAGER'])
-                && resource.data.approvalSnapshot.assignedManagerIds.hasAny([request.auth.uid])
-              )
-            )
+            last.stage == 'FINANCE_MANAGER'
+            && last.decision == 'APPROVED'
+            && request.resource.data.approvedAmount > 0
+            && request.resource.data.approvedAmount <= resource.data.requestedAmount
+            && request.resource.data.remainingAmount == request.resource.data.approvedAmount
           )
           || (
-            resource.data.status == 'PENDING_FINANCE'
-            && request.resource.data.status in ['READY_FOR_PAYMENT', 'REJECTED']
+            (last.stage != 'FINANCE_MANAGER' || last.decision != 'APPROVED')
+            && request.resource.data.approvedAmount == 0
+            && request.resource.data.remainingAmount == resource.data.remainingAmount
+          )
+        )
+        && (
+          isAdmin()
+          || (
+            resource.data.createdBy != request.auth.uid
             && (
-              isAdmin()
+              (
+                managerStage
+                && hasAnyRole(['MANAGER'])
+                && resource.data.approvalSnapshot.assignedManagerIds.hasAny([request.auth.uid])
+              )
               || (
-                hasAnyRole(['FINANCE_MANAGER'])
+                !managerStage
+                && hasAnyRole(['FINANCE_MANAGER'])
                 && resource.data.approvalSnapshot.assignedFinanceManagerIds.hasAny([request.auth.uid])
+                && priorManagerDecision.stage == 'MANAGER'
+                && priorManagerDecision.decision == 'APPROVED'
+                && priorManagerDecision.actorId != request.auth.uid
               )
             )
           )
         )
-        && request.resource.data.approvalHistory is list
-        && request.resource.data.approvalHistory.size() == resource.data.approvalHistory.size() + 1
-        && request.resource.data.approvalHistory[request.resource.data.approvalHistory.size() - 1].actorId == request.auth.uid
+        && approval.id == last.approvalId
+        && approval.branchId == 'ABS'
+        && approval.requestId == resource.id
+        && approval.actorId == request.auth.uid
+        && approval.stage == last.stage
+        && approval.decision == last.decision
+        && approval.approvedAmount == request.resource.data.approvedAmount
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'status',
           'approvedAmount',
@@ -99,40 +210,253 @@ service cloud.firestore {
     }
 
     function canUpdateDisbursementTotals() {
+      let payment = getAfter(disbursementPath(request.resource.data.lastDisbursementId)).data;
+      let requestPaid = request.resource.data.totalPaidAmount;
+      let requestRemaining = request.resource.data.remainingAmount;
+      let approved = request.resource.data.approvedAmount;
+      let isReversal = request.resource.data.lastDisbursementIsReversal == true;
       return hasAnyRole(['DISBURSEMENT_OFFICER', 'ADMIN'])
         && resource.data.branchId == 'ABS'
         && request.resource.data.branchId == 'ABS'
         && resource.data.status in ['READY_FOR_PAYMENT', 'PARTIALLY_PAID', 'PAID']
         && request.resource.data.status in ['READY_FOR_PAYMENT', 'PARTIALLY_PAID', 'PAID']
-        && request.resource.data.approvedAmount == resource.data.approvedAmount
-        && request.resource.data.totalPaidAmount is number
-        && request.resource.data.remainingAmount is number
-        && request.resource.data.totalPaidAmount >= 0
-        && request.resource.data.totalPaidAmount <= resource.data.approvedAmount
-        && request.resource.data.remainingAmount >= 0
+        && approved == resource.data.approvedAmount
+        && requestPaid is number
+        && requestRemaining is number
+        && requestPaid >= 0
+        && requestPaid <= approved
+        && requestRemaining >= 0
+        && request.resource.data.lastDisbursementId is string
+        && payment.id == request.resource.data.lastDisbursementId
+        && payment.requestId == resource.id
+        && payment.disbursedBy == request.auth.uid
+        && payment.amount == request.resource.data.lastDisbursementAmount
         && (
           (
-            request.resource.data.totalPaidAmount > resource.data.totalPaidAmount
+            !isReversal
+            && payment.isReversal == false
+            && payment.amount > 0
             && resource.data.status in ['READY_FOR_PAYMENT', 'PARTIALLY_PAID']
             && request.resource.data.status in ['PARTIALLY_PAID', 'PAID']
+            && requestPaid >= resource.data.totalPaidAmount + payment.amount - 0.0001
+            && requestPaid <= resource.data.totalPaidAmount + payment.amount + 0.0001
           )
           || (
-            request.resource.data.totalPaidAmount < resource.data.totalPaidAmount
+            isReversal
+            && payment.isReversal == true
+            && payment.amount < 0
+            && validOriginalPaymentForReversal(payment, resource.id)
             && resource.data.status in ['PARTIALLY_PAID', 'PAID']
             && request.resource.data.status in ['READY_FOR_PAYMENT', 'PARTIALLY_PAID']
+            && requestPaid >= resource.data.totalPaidAmount + payment.amount - 0.0001
+            && requestPaid <= resource.data.totalPaidAmount + payment.amount + 0.0001
           )
+        )
+        && requestRemaining >= approved - requestPaid - 0.0001
+        && requestRemaining <= approved - requestPaid + 0.0001
+        && request.resource.data.status == (
+          requestRemaining == 0
+            ? 'PAID'
+            : (requestPaid == 0 ? 'READY_FOR_PAYMENT' : 'PARTIALLY_PAID')
         )
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'totalPaidAmount',
           'remainingAmount',
           'status',
           'chequeDetails',
-          'updatedAt'
+          'updatedAt',
+          'lastDisbursementId',
+          'lastDisbursementAmount',
+          'lastDisbursementIsReversal'
         ]);
     }
 
+    function isRequestSubmissionAudit() {
+      let data = request.resource.data;
+      let before = get(requestPath(data.entityId)).data;
+      let after = getAfter(requestPath(data.entityId)).data;
+      return data.entityType == 'REQUEST'
+        && data.action in ['REQUEST_SUBMITTED', 'REQUEST_RESUBMITTED']
+        && before.branchId == 'ABS'
+        && after.branchId == 'ABS'
+        && after.createdBy == before.createdBy
+        && (before.createdBy == request.auth.uid || isAdmin())
+        && after.status == 'PENDING_MANAGER'
+        && data.newValues.status == after.status
+        && data.newValues.requestNumber == after.requestNumber
+        && after.approvalSnapshot is map;
+    }
+
+    function isApprovalAudit() {
+      let data = request.resource.data;
+      let before = get(requestPath(data.entityId)).data;
+      let after = getAfter(requestPath(data.entityId)).data;
+      let decision = data.newValues.decisionRecord;
+      let approval = getAfter(approvalPath(decision.approvalId)).data;
+      return data.entityType == 'REQUEST'
+        && data.action in [
+          'MANAGER_APPROVED',
+          'MANAGER_REJECTED',
+          'FINANCE_MANAGER_APPROVED',
+          'FINANCE_MANAGER_REJECTED'
+        ]
+        && before.branchId == 'ABS'
+        && after.branchId == 'ABS'
+        && after.status == data.newValues.status
+        && after.approvalHistory.size() == before.approvalHistory.size() + 1
+        && after.approvalHistory[after.approvalHistory.size() - 1].actorId == request.auth.uid
+        && after.approvalHistory[after.approvalHistory.size() - 1].approvalId == decision.approvalId
+        && approval.requestId == data.entityId
+        && approval.actorId == request.auth.uid
+        && approval.stage == decision.stage
+        && approval.decision == decision.decision
+        && data.action == decision.stage + '_' + decision.decision
+        && (before.createdBy != request.auth.uid || isAdmin());
+    }
+
+    function isPaymentAudit() {
+      let data = request.resource.data;
+      let payment = getAfter(disbursementPath(data.entityId)).data;
+      let after = getAfter(requestPath(payment.requestId)).data;
+      return data.entityType == 'DISBURSEMENT'
+        && data.action in ['DISBURSEMENT_FULL_COMPLETED', 'DISBURSEMENT_PARTIAL_RECORDED']
+        && payment.id == data.entityId
+        && payment.isReversal == false
+        && payment.disbursedBy == request.auth.uid
+        && payment.requestId is string
+        && after.lastDisbursementId == data.entityId
+        && after.lastDisbursementIsReversal == false
+        && data.newValues.paymentAmount == payment.amount
+        && data.newValues.totalPaidAmount == after.totalPaidAmount
+        && data.newValues.remainingAmount == after.remainingAmount
+        && data.newValues.status == after.status
+        && data.action == (
+          after.status == 'PAID'
+            ? 'DISBURSEMENT_FULL_COMPLETED'
+            : 'DISBURSEMENT_PARTIAL_RECORDED'
+        );
+    }
+
+    function isReversalAudit() {
+      let data = request.resource.data;
+      let original = get(disbursementPath(data.entityId)).data;
+      let reversal = getAfter(disbursementPath('REV_' + data.entityId)).data;
+      let after = getAfter(requestPath(original.requestId)).data;
+      return data.entityType == 'DISBURSEMENT'
+        && data.action == 'DISBURSEMENT_REVERSED'
+        && original.id == data.entityId
+        && original.isReversal == false
+        && original.disbursedBy is string
+        && reversal.isReversal == true
+        && reversal.reversesPaymentId == data.entityId
+        && reversal.requestId == original.requestId
+        && reversal.disbursedBy == request.auth.uid
+        && reversal.amount < 0
+        && reversal.amount >= -original.amount - 0.0001
+        && reversal.amount <= -original.amount + 0.0001
+        && data.reason is string
+        && data.reason.size() >= 5
+        && after.lastDisbursementId == reversal.id
+        && after.lastDisbursementIsReversal == true
+        && data.newValues.totalPaidAmount == after.totalPaidAmount
+        && data.newValues.remainingAmount == after.remainingAmount
+        && data.newValues.status == after.status;
+    }
+
+    function isApprovalChainAudit() {
+      let data = request.resource.data;
+      let config = getAfter(
+        /databases/$(database)/documents/settings/approval_chain
+      ).data;
+      return data.action == 'APPROVAL_CHAIN_UPDATED'
+        && data.entityType == 'SETTINGS'
+        && data.entityId == 'approval_chain'
+        && isAdmin()
+        && config.branchId == 'ABS'
+        && config.updatedBy == request.auth.uid
+        && config.version == data.newValues.version
+        && config.managerUserIds == data.newValues.managerUserIds
+        && config.financeManagerUserIds == data.newValues.financeManagerUserIds
+        && config.enabled == data.newValues.enabled
+        && data.reason is string
+        && data.reason.size() >= 3;
+    }
+
+    function isUserProvisioningAudit() {
+      let data = request.resource.data;
+      let newUser = getAfter(userPath(data.entityId)).data;
+      return data.action == 'USER_PROVISIONED'
+        && data.entityType == 'USER'
+        && isAdmin()
+        && newUser.uid == data.entityId
+        && newUser.branchId == 'ABS'
+        && newUser.isActive == true
+        && newUser.email == data.newValues.email
+        && newUser.roles == data.newValues.roles;
+    }
+
+    function validAuditLog() {
+      let action = request.resource.data.action;
+      return (
+          action in ['REQUEST_SUBMITTED', 'REQUEST_RESUBMITTED']
+          && isRequestSubmissionAudit()
+        )
+        || (
+          action in [
+            'MANAGER_APPROVED',
+            'MANAGER_REJECTED',
+            'FINANCE_MANAGER_APPROVED',
+            'FINANCE_MANAGER_REJECTED'
+          ]
+          && isApprovalAudit()
+        )
+        || (
+          action in ['DISBURSEMENT_FULL_COMPLETED', 'DISBURSEMENT_PARTIAL_RECORDED']
+          && isPaymentAudit()
+        )
+        || (action == 'DISBURSEMENT_REVERSED' && isReversalAudit())
+        || (action == 'APPROVAL_CHAIN_UPDATED' && isApprovalChainAudit())
+        || (action == 'USER_PROVISIONED' && isUserProvisioningAudit());
+    }
+
+    function validNewDisbursement(data, after) {
+      return data.isReversal == false
+        && data.amount > 0
+        && after.lastDisbursementIsReversal == false;
+    }
+
+    function validReversalDisbursement(data, disbursementId, after) {
+      return data.isReversal == true
+        && data.amount < 0
+        && after.lastDisbursementIsReversal == true
+        && disbursementId == 'REV_' + data.reversesPaymentId
+        && validOriginalPaymentForReversal(data, data.requestId);
+    }
+
+    function canCreateDisbursement(disbursementId) {
+      let data = request.resource.data;
+      let after = getAfter(requestPath(data.requestId)).data;
+      return hasAnyRole(['DISBURSEMENT_OFFICER', 'ADMIN'])
+        && data.branchId == 'ABS'
+        && data.disbursedBy == request.auth.uid
+        && data.requestId is string
+        && exists(requestPath(data.requestId))
+        && get(requestPath(data.requestId)).data.branchId == 'ABS'
+        && data.amount is number
+        && data.id == disbursementId
+        && after.lastDisbursementId == disbursementId
+        && after.lastDisbursementAmount == data.amount
+        && after.totalPaidAmount >= get(requestPath(data.requestId)).data.totalPaidAmount + data.amount - 0.0001
+        && after.totalPaidAmount <= get(requestPath(data.requestId)).data.totalPaidAmount + data.amount + 0.0001
+        && (
+          validNewDisbursement(data, after)
+          || validReversalDisbursement(data, disbursementId, after)
+        );
+    }
+
     match /users/{userId} {
-      allow read: if isActiveBranchUser();
+      allow get: if isActiveBranchUser() && (userId == request.auth.uid || isAdmin());
+      allow list: if isAdmin();
       allow create: if isAdmin()
         && request.resource.data.uid == userId
         && request.resource.data.branchId == 'ABS'
@@ -147,18 +471,57 @@ service cloud.firestore {
 
     match /settings/{settingId} {
       allow read: if isActiveBranchUser();
-      allow create, update: if isAdmin()
+      allow create: if isAdmin()
         && settingId == 'approval_chain'
         && request.resource.data.branchId == 'ABS'
-        && request.resource.data.version is int;
+        && request.resource.data.version == 1
+        && request.resource.data.enabled is bool
+        && request.resource.data.managerUserIds is list
+        && request.resource.data.financeManagerUserIds is list
+        && (
+          !request.resource.data.enabled
+          || (
+            request.resource.data.managerUserIds.size() > 0
+            && request.resource.data.financeManagerUserIds.size() > 0
+          )
+        );
+      allow update: if isAdmin()
+        && settingId == 'approval_chain'
+        && resource.data.branchId == 'ABS'
+        && request.resource.data.branchId == 'ABS'
+        && request.resource.data.version == resource.data.version + 1
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.enabled is bool
+        && request.resource.data.managerUserIds is list
+        && request.resource.data.financeManagerUserIds is list
+        && (
+          !request.resource.data.enabled
+          || (
+            request.resource.data.managerUserIds.size() > 0
+            && request.resource.data.financeManagerUserIds.size() > 0
+          )
+        );
       allow delete: if false;
     }
 
     match /counters/{counterId} {
       allow read: if hasAnyRole(['REQUESTER', 'ADMIN']);
-      allow create, update: if hasAnyRole(['REQUESTER', 'ADMIN'])
+      allow create: if hasAnyRole(['REQUESTER', 'ADMIN'])
+        && counterId.matches('^ABS_(PC|CH)_[0-9]{4}$')
         && request.resource.data.branchId == 'ABS'
-        && request.resource.data.lastSeq is int;
+        && request.resource.data.lastSeq == 1
+        && request.resource.data.seq == 1
+        && counterBackedBySubmittedRequest(counterId);
+      allow update: if hasAnyRole(['REQUESTER', 'ADMIN'])
+        && counterId.matches('^ABS_(PC|CH)_[0-9]{4}$')
+        && resource.data.branchId == 'ABS'
+        && request.resource.data.branchId == 'ABS'
+        && request.resource.data.lastSeq is int
+        && request.resource.data.seq == request.resource.data.lastSeq
+        && request.resource.data.lastSeq == (
+          resource.data.keys().hasAny(['lastSeq']) ? resource.data.lastSeq : resource.data.seq
+        ) + 1
+        && counterBackedBySubmittedRequest(counterId);
       allow delete: if false;
     }
 
@@ -168,7 +531,8 @@ service cloud.firestore {
         && request.resource.data.branchId == 'ABS'
         && request.resource.data.name is string
         && request.resource.data.name.size() > 1;
-      allow update: if hasAnyRole(['ADMIN'])
+      allow update: if isAdmin()
+        && resource.data.branchId == 'ABS'
         && request.resource.data.branchId == 'ABS';
       allow delete: if false;
     }
@@ -183,10 +547,12 @@ service cloud.firestore {
         && request.resource.data.branchId == 'ABS'
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.status == 'DRAFT'
+        && request.resource.data.requestNumber.matches('^DRAFT-[A-Za-z0-9_-]+$')
         && request.resource.data.requestedAmount is number
         && request.resource.data.requestedAmount > 0
         && request.resource.data.approvedAmount == 0
-        && request.resource.data.totalPaidAmount == 0;
+        && request.resource.data.totalPaidAmount == 0
+        && request.resource.data.remainingAmount == request.resource.data.requestedAmount;
 
       allow update: if (
         hasAnyRole(['REQUESTER', 'ADMIN'])
@@ -198,6 +564,21 @@ service cloud.firestore {
         && request.resource.data.requestNumber == resource.data.requestNumber
         && request.resource.data.approvedAmount == 0
         && request.resource.data.totalPaidAmount == 0
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'requestDate',
+          'customerId',
+          'customerSnapshot',
+          'beneficiaryName',
+          'expenseCategory',
+          'purpose',
+          'currency',
+          'exchangeRateToEgp',
+          'requestedAmount',
+          'remainingAmount',
+          'chequeDetails',
+          'attachments',
+          'updatedAt'
+        ])
       ) || canSubmitRequest() || canApproveRequest() || canUpdateDisbursementTotals();
 
       allow delete: if false;
@@ -206,10 +587,18 @@ service cloud.firestore {
     match /approvals/{approvalId} {
       allow read: if isActiveBranchUser();
       allow create: if isActiveBranchUser()
+        && request.resource.data.id == approvalId
         && request.resource.data.branchId == 'ABS'
         && request.resource.data.actorId == request.auth.uid
+        && request.resource.data.approvedAmount is number
+        && request.resource.data.requestId is string
         && exists(requestPath(request.resource.data.requestId))
         && get(requestPath(request.resource.data.requestId)).data.branchId == 'ABS'
+        && getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory.size()
+          == get(requestPath(request.resource.data.requestId)).data.approvalHistory.size() + 1
+        && getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory[
+          getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory.size() - 1
+        ].approvalId == approvalId
         && (
           (
             request.resource.data.stage == 'MANAGER'
@@ -234,61 +623,19 @@ service cloud.firestore {
             )
           )
         )
-        && getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory.size()
-          == get(requestPath(request.resource.data.requestId)).data.approvalHistory.size() + 1
-        && getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory[
-          getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory.size() - 1
-        ].actorId == request.auth.uid
-        && getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory[
-          getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory.size() - 1
-        ].stage == request.resource.data.stage
-        && getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory[
-          getAfter(requestPath(request.resource.data.requestId)).data.approvalHistory.size() - 1
-        ].decision == request.resource.data.decision
         && getAfter(requestPath(request.resource.data.requestId)).data.status == (
           request.resource.data.stage == 'MANAGER'
             ? (request.resource.data.decision == 'APPROVED' ? 'PENDING_FINANCE' : 'REJECTED')
             : (request.resource.data.decision == 'APPROVED' ? 'READY_FOR_PAYMENT' : 'REJECTED')
-        );
+        )
+        && request.resource.data.approvedAmount
+          == getAfter(requestPath(request.resource.data.requestId)).data.approvedAmount;
       allow update, delete: if false;
     }
 
     match /disbursements/{disbursementId} {
       allow read: if hasAnyRole(['ADMIN', 'FINANCE_MANAGER', 'DISBURSEMENT_OFFICER', 'AUDITOR', 'MANAGER']);
-      allow create: if hasAnyRole(['DISBURSEMENT_OFFICER', 'ADMIN'])
-        && request.resource.data.branchId == 'ABS'
-        && request.resource.data.disbursedBy == request.auth.uid
-        && request.resource.data.amount is number
-        && exists(requestPath(request.resource.data.requestId))
-        && get(requestPath(request.resource.data.requestId)).data.branchId == 'ABS'
-        && getAfter(requestPath(request.resource.data.requestId)).data.totalPaidAmount
-          >= get(requestPath(request.resource.data.requestId)).data.totalPaidAmount + request.resource.data.amount - 0.0001
-        && getAfter(requestPath(request.resource.data.requestId)).data.totalPaidAmount
-          <= get(requestPath(request.resource.data.requestId)).data.totalPaidAmount + request.resource.data.amount + 0.0001
-        && getAfter(requestPath(request.resource.data.requestId)).data.remainingAmount
-          >= getAfter(requestPath(request.resource.data.requestId)).data.approvedAmount
-            - getAfter(requestPath(request.resource.data.requestId)).data.totalPaidAmount - 0.0001
-        && getAfter(requestPath(request.resource.data.requestId)).data.remainingAmount
-          <= getAfter(requestPath(request.resource.data.requestId)).data.approvedAmount
-            - getAfter(requestPath(request.resource.data.requestId)).data.totalPaidAmount + 0.0001
-        && getAfter(requestPath(request.resource.data.requestId)).data.status == (
-          getAfter(requestPath(request.resource.data.requestId)).data.remainingAmount == 0
-            ? 'PAID'
-            : (getAfter(requestPath(request.resource.data.requestId)).data.totalPaidAmount == 0
-              ? 'READY_FOR_PAYMENT'
-              : 'PARTIALLY_PAID')
-        )
-        && (
-          (
-            request.resource.data.isReversal == false
-            && request.resource.data.amount > 0
-          )
-          || (
-            request.resource.data.isReversal == true
-            && request.resource.data.amount < 0
-            && request.resource.data.reversesPaymentId is string
-          )
-        );
+      allow create: if canCreateDisbursement(disbursementId);
       allow update, delete: if false;
     }
 
@@ -297,7 +644,12 @@ service cloud.firestore {
       allow create: if isActiveBranchUser()
         && request.resource.data.branchId == 'ABS'
         && request.resource.data.userId == request.auth.uid
-        && request.resource.data.actorUid == request.auth.uid;
+        && request.resource.data.actorUid == request.auth.uid
+        && request.resource.data.actorRole is string
+        && userDoc().roles.hasAny([request.resource.data.actorRole])
+        && request.resource.data.action is string
+        && request.resource.data.entityId is string
+        && validAuditLog();
       allow update, delete: if false;
     }
 

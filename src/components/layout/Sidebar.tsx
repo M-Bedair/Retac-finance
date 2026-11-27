@@ -117,7 +117,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
           <button
             onClick={onClose}
             className="lg:hidden text-slate-300 hover:text-white"
-            aria-label="Close navigation"
+            aria-label={t('closeNavigation')}
           >
             <X className="w-5 h-5" />
           </button>
@@ -148,7 +148,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
         </nav>
 
         <div className="p-4 border-t border-white/10 text-xs text-slate-400">
-          RETAC Financial Control v1.0
+          {t('brandTitle')} · ١٫٠
         </div>
       </aside>
     </>

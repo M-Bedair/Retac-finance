@@ -5,15 +5,18 @@ export default {
     extend: {
       colors: {
         retac: {
-          navy: '#0B132B',
-          navySecondary: '#0E1A33',
-          gold: '#D4AF37',
-          goldSecondary: '#B8952E',
-          bg: '#F4F6F9',
+          navy: '#101C32',
+          navySecondary: '#0B132B',
+          gold: '#C5A46D',
+          goldSecondary: '#D9C39A',
+          bg: '#F7F5F0',
+          ivory: '#F7F5F0',
+          text: '#263247',
+          line: '#E8E4DA',
         },
       },
       fontFamily: {
-        sans: ['Inter', 'Cairo', 'system-ui', 'sans-serif'],
+        sans: ['IBM Plex Sans Arabic', 'Cairo', 'Inter', 'system-ui', 'sans-serif'],
       },
     },
   },

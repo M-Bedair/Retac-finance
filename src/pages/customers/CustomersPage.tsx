@@ -2,11 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { addDoc, collection, doc, onSnapshot, orderBy, query, updateDoc, where } from 'firebase/firestore';
 import { db } from '../../config/firebase';
 import { useAuth } from '../../contexts/AuthContext';
+import { useI18n } from '../../contexts/I18nContext';
 import { Customer } from '../../types/domain';
 import { Plus, Search } from 'lucide-react';
 
 export const CustomersPage: React.FC = () => {
   const { hasRole } = useAuth();
+  const { t } = useI18n();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
@@ -44,38 +46,51 @@ export const CustomersPage: React.FC = () => {
         (trimmedTax && c.taxRegistrationNumber === trimmedTax)
     );
     if (duplicate) {
-      setError(`Duplicate customer detected: ${duplicate.name} (${duplicate.taxRegistrationNumber})`);
+      setError(
+        t('duplicateCustomerDetected', {
+          name: duplicate.name,
+          taxNumber: duplicate.taxRegistrationNumber,
+        })
+      );
       return;
     }
 
-    const now = new Date().toISOString();
-    await addDoc(collection(db, 'customers'), {
-      ...form,
-      name: trimmedName,
-      taxRegistrationNumber: trimmedTax,
-      status: 'ACTIVE',
-      branchId: 'ABS',
-      createdAt: now,
-      updatedAt: now,
-    });
+    try {
+      const now = new Date().toISOString();
+      await addDoc(collection(db, 'customers'), {
+        ...form,
+        name: trimmedName,
+        taxRegistrationNumber: trimmedTax,
+        status: 'ACTIVE',
+        branchId: 'ABS',
+        createdAt: now,
+        updatedAt: now,
+      });
 
-    setForm({
-      name: '',
-      taxRegistrationNumber: '',
-      address: '',
-      phone: '',
-      contactPerson: '',
-      email: '',
-    });
-    setShowForm(false);
+      setForm({
+        name: '',
+        taxRegistrationNumber: '',
+        address: '',
+        phone: '',
+        contactPerson: '',
+        email: '',
+      });
+      setShowForm(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('customerSaveFailed'));
+    }
   };
 
   const toggleStatus = async (c: Customer) => {
     if (!hasRole(['ADMIN'])) return;
-    await updateDoc(doc(db, 'customers', c.id), {
-      status: c.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE',
-      updatedAt: new Date().toISOString(),
-    });
+    try {
+      await updateDoc(doc(db, 'customers', c.id), {
+        status: c.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE',
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('customerUpdateFailed'));
+    }
   };
 
   const filtered = customers.filter(
@@ -89,10 +104,8 @@ export const CustomersPage: React.FC = () => {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-lg font-bold text-retac-navy">Customer & Vendor Master</h2>
-          <p className="text-xs text-slate-500">
-            Centralized directory with duplicate detection and historical snapshotting
-          </p>
+          <h2 className="text-lg font-bold text-retac-navy">{t('customerTitle')}</h2>
+          <p className="text-xs text-slate-500">{t('customerSubtitle')}</p>
         </div>
         {hasRole(['ADMIN', 'REQUESTER']) && (
           <button
@@ -100,7 +113,7 @@ export const CustomersPage: React.FC = () => {
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-retac-navy text-white text-xs font-semibold hover:bg-retac-navySecondary"
           >
             <Plus className="w-4 h-4 text-retac-gold" />
-            <span>Add Customer</span>
+            <span>{t('addCustomer')}</span>
           </button>
         )}
       </div>
@@ -110,7 +123,7 @@ export const CustomersPage: React.FC = () => {
           onSubmit={handleCreate}
           className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4"
         >
-          <h3 className="text-sm font-bold text-retac-navy">New Customer Record</h3>
+          <h3 className="text-sm font-bold text-retac-navy">{t('newCustomer')}</h3>
           {error && (
             <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs">
               {error}
@@ -119,38 +132,38 @@ export const CustomersPage: React.FC = () => {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <input
               required
-              placeholder="Customer / Vendor Name *"
+              placeholder={t('customerName')}
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
               className="px-3 py-2 rounded-lg border border-slate-300 text-xs"
             />
             <input
-              placeholder="Tax Registration Number"
+              placeholder={t('taxNumber')}
               value={form.taxRegistrationNumber}
               onChange={(e) => setForm({ ...form, taxRegistrationNumber: e.target.value })}
               className="px-3 py-2 rounded-lg border border-slate-300 text-xs"
             />
             <input
-              placeholder="Phone"
+              placeholder={t('phone')}
               value={form.phone}
               onChange={(e) => setForm({ ...form, phone: e.target.value })}
               className="px-3 py-2 rounded-lg border border-slate-300 text-xs"
             />
             <input
-              placeholder="Contact Person"
+              placeholder={t('contactPerson')}
               value={form.contactPerson}
               onChange={(e) => setForm({ ...form, contactPerson: e.target.value })}
               className="px-3 py-2 rounded-lg border border-slate-300 text-xs"
             />
             <input
               type="email"
-              placeholder="Email"
+              placeholder={t('email')}
               value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })}
               className="px-3 py-2 rounded-lg border border-slate-300 text-xs"
             />
             <input
-              placeholder="Address"
+              placeholder={t('address')}
               value={form.address}
               onChange={(e) => setForm({ ...form, address: e.target.value })}
               className="px-3 py-2 rounded-lg border border-slate-300 text-xs"
@@ -162,13 +175,13 @@ export const CustomersPage: React.FC = () => {
               onClick={() => setShowForm(false)}
               className="px-4 py-2 rounded-lg border border-slate-300 text-xs"
             >
-              Cancel
+              {t('cancel')}
             </button>
             <button
               type="submit"
               className="px-4 py-2 rounded-lg bg-retac-gold text-retac-navy font-semibold text-xs"
             >
-              Save Customer
+              {t('saveCustomer')}
             </button>
           </div>
         </form>
@@ -178,7 +191,7 @@ export const CustomersPage: React.FC = () => {
         <div className="p-4 border-b border-slate-200 flex items-center gap-2">
           <Search className="w-4 h-4 text-slate-400" />
           <input
-            placeholder="Search by name, tax number, or phone..."
+            placeholder={t('searchCustomers')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full text-xs focus:outline-none"
@@ -188,12 +201,12 @@ export const CustomersPage: React.FC = () => {
           <table className="w-full text-xs text-start">
             <thead className="bg-slate-50 text-slate-600 uppercase border-b border-slate-200">
               <tr>
-                <th className="px-4 py-3 text-start">Name</th>
-                <th className="px-4 py-3 text-start">Tax Reg #</th>
-                <th className="px-4 py-3 text-start">Contact</th>
-                <th className="px-4 py-3 text-start">Phone</th>
-                <th className="px-4 py-3 text-start">Status</th>
-                {hasRole(['ADMIN']) && <th className="px-4 py-3 text-end">Action</th>}
+                <th className="px-4 py-3 text-start">{t('name')}</th>
+                <th className="px-4 py-3 text-start">{t('taxNumber')}</th>
+                <th className="px-4 py-3 text-start">{t('contact')}</th>
+                <th className="px-4 py-3 text-start">{t('phone')}</th>
+                <th className="px-4 py-3 text-start">{t('status')}</th>
+                {hasRole(['ADMIN']) && <th className="px-4 py-3 text-end">{t('action')}</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -211,7 +224,7 @@ export const CustomersPage: React.FC = () => {
                           : 'bg-slate-100 text-slate-500'
                       }`}
                     >
-                      {c.status}
+                      {c.status === 'ACTIVE' ? t('active') : t('inactive')}
                     </span>
                   </td>
                   {hasRole(['ADMIN']) && (
@@ -220,7 +233,7 @@ export const CustomersPage: React.FC = () => {
                         onClick={() => toggleStatus(c)}
                         className="text-xs font-semibold text-retac-navy underline"
                       >
-                        {c.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
+                        {c.status === 'ACTIVE' ? t('deactivate') : t('activate')}
                       </button>
                     </td>
                   )}

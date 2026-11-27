@@ -97,6 +97,7 @@ export async function submitFinancialRequestSpark(requestId: string, user: Spark
           year,
           lastSeq: nextSequence,
           seq: nextSequence,
+          lastRequestId: requestId,
           updatedAt: serverTimestamp(),
         },
         { merge: true }
@@ -220,11 +221,13 @@ export async function processApprovalDecisionSpark(params: {
 
     if (decision === 'REJECTED') finalApprovedAmount = 0;
     const decisionRecord = {
+      approvalId: approvalRef.id,
       stage,
       decision,
       actorId: user.uid,
       actorName: user.displayName,
       comment: comment.trim(),
+      approvedAmount: finalApprovedAmount,
       decidedAt: new Date().toISOString(),
     };
     const nextHistory = [...history, decisionRecord];
@@ -237,6 +240,7 @@ export async function processApprovalDecisionSpark(params: {
       updatedAt: serverTimestamp(),
     });
     transaction.set(approvalRef, {
+      id: approvalRef.id,
       branchId: BRANCH_ID,
       requestId,
       requestNumber: request.requestNumber,
@@ -261,6 +265,7 @@ export async function processApprovalDecisionSpark(params: {
 
 export async function recordDisbursementSpark(params: {
   requestId: string;
+  idempotencyKey: string;
   amount: number;
   paymentDate: string;
   paymentMethod: string;
@@ -276,6 +281,7 @@ export async function recordDisbursementSpark(params: {
 }) {
   const {
     requestId,
+    idempotencyKey,
     amount,
     paymentDate,
     paymentMethod,
@@ -288,18 +294,51 @@ export async function recordDisbursementSpark(params: {
     throw new Error('A Disbursement Officer role is required.');
   }
   const paymentAmount = Number(Number(amount).toFixed(2));
-  if (!Number.isFinite(paymentAmount) || paymentAmount <= 0 || !paymentDate || !paymentMethod) {
+  const normalizedKey = idempotencyKey.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+  if (
+    !normalizedKey ||
+    normalizedKey.length > 100 ||
+    !Number.isFinite(paymentAmount) ||
+    paymentAmount <= 0 ||
+    !paymentDate ||
+    !paymentMethod
+  ) {
     throw new Error('A positive amount, payment date, and payment method are required.');
   }
 
   const requestRef = doc(db, 'requests', requestId);
-  const paymentRef = doc(collection(db, 'disbursements'));
+  const paymentId = `${requestId}_${normalizedKey}`;
+  const paymentRef = doc(db, 'disbursements', paymentId);
   const auditRef = doc(collection(db, 'audit_logs'));
 
   return runTransaction(db, async (transaction) => {
-    const requestSnapshot = await transaction.get(requestRef);
+    const [requestSnapshot, paymentSnapshot] = await Promise.all([
+      transaction.get(requestRef),
+      transaction.get(paymentRef),
+    ]);
     if (!requestSnapshot.exists()) throw new Error('Request not found.');
     const request = requestSnapshot.data();
+    const normalizedReference = transactionReference.trim();
+
+    if (paymentSnapshot.exists()) {
+      const existingPayment = paymentSnapshot.data();
+      if (
+        existingPayment.requestId !== requestId ||
+        existingPayment.disbursedBy !== user.uid ||
+        Number(existingPayment.amount) !== paymentAmount ||
+        existingPayment.paymentDate !== paymentDate ||
+        existingPayment.paymentMethod !== paymentMethod ||
+        existingPayment.transactionReference !== normalizedReference
+      ) {
+        throw new Error('This idempotency key was already used for a different payment.');
+      }
+      return {
+        paymentId,
+        status: request.status,
+        remainingAmount: Number(request.remainingAmount || 0),
+      };
+    }
+
     if (!['READY_FOR_PAYMENT', 'PARTIALLY_PAID'].includes(request.status)) {
       throw new Error('The request is not approved and ready for disbursement.');
     }
@@ -326,9 +365,9 @@ export async function recordDisbursementSpark(params: {
     const newRemaining = Number((approvedAmount - newTotalPaid).toFixed(2));
     const nextStatus = newRemaining <= 0 ? 'PAID' : 'PARTIALLY_PAID';
     const now = new Date().toISOString();
-    const paymentId = paymentRef.id;
     transaction.set(paymentRef, {
       id: paymentId,
+      idempotencyKey: normalizedKey,
       branchId: BRANCH_ID,
       requestId,
       requestNumber: request.requestNumber,
@@ -339,7 +378,7 @@ export async function recordDisbursementSpark(params: {
       currency: request.currency || 'EGP',
       paymentDate,
       paymentMethod,
-      transactionReference: transactionReference.trim(),
+      transactionReference: normalizedReference,
       chequeDetails: mergedChequeDetails,
       receiptUrl: null,
       notes: notes.trim(),
@@ -355,6 +394,9 @@ export async function recordDisbursementSpark(params: {
       status: nextStatus,
       chequeDetails: mergedChequeDetails,
       updatedAt: serverTimestamp(),
+      lastDisbursementId: paymentId,
+      lastDisbursementAmount: paymentAmount,
+      lastDisbursementIsReversal: false,
     });
     transaction.set(
       auditRef,
@@ -370,7 +412,7 @@ export async function recordDisbursementSpark(params: {
           totalPaidAmount: newTotalPaid,
           remainingAmount: newRemaining,
           paymentMethod,
-          transactionReference: transactionReference.trim(),
+          transactionReference: normalizedReference,
         },
       })
     );
@@ -443,6 +485,9 @@ export async function reverseDisbursementSpark(params: {
       remainingAmount: newRemaining,
       status: nextStatus,
       updatedAt: serverTimestamp(),
+      lastDisbursementId: reversalId,
+      lastDisbursementAmount: -reversedAmount,
+      lastDisbursementIsReversal: true,
     });
     transaction.set(
       auditRef,
@@ -470,7 +515,12 @@ export async function updateApprovalChainConfigSpark(params: {
 }) {
   const { managerUserIds, financeManagerUserIds, enabled, reason, user } = params;
   if (!hasRole(user, 'ADMIN')) throw new Error('Only an administrator can update the approval chain.');
-  if (!reason.trim()) throw new Error('An audit reason is required for approval-chain changes.');
+  if (reason.trim().length < 3) {
+    throw new Error('An audit reason of at least 3 characters is required for approval-chain changes.');
+  }
+  if (enabled && (!managerUserIds.length || !financeManagerUserIds.length)) {
+    throw new Error('At least one Manager and Finance Manager must be assigned when the workflow is enabled.');
+  }
 
   const configRef = doc(db, 'settings', 'approval_chain');
   const auditRef = doc(collection(db, 'audit_logs'));

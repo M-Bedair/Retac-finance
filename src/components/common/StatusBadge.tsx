@@ -1,5 +1,6 @@
 import React from 'react';
 import { RequestStatus } from '../../types/domain';
+import { useI18n } from '../../contexts/I18nContext';
 
 const STATUS_STYLES: Record<RequestStatus, string> = {
   DRAFT: 'bg-slate-100 text-slate-700 border-slate-300',
@@ -13,10 +14,25 @@ const STATUS_STYLES: Record<RequestStatus, string> = {
   CANCELLED: 'bg-zinc-100 text-zinc-600 border-zinc-300',
 };
 
-export const StatusBadge: React.FC<{ status: RequestStatus }> = ({ status }) => (
-  <span
-    className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${STATUS_STYLES[status]}`}
-  >
-    {status.replace(/_/g, ' ')}
-  </span>
-);
+const STATUS_LABELS: Record<RequestStatus, Parameters<ReturnType<typeof useI18n>['t']>[0]> = {
+  DRAFT: 'statusDraft',
+  SUBMITTED: 'statusSubmitted',
+  PENDING_MANAGER: 'statusPendingManager',
+  PENDING_FINANCE: 'statusPendingFinance',
+  READY_FOR_PAYMENT: 'statusReadyForPayment',
+  PARTIALLY_PAID: 'statusPartiallyPaid',
+  PAID: 'statusPaid',
+  REJECTED: 'statusRejected',
+  CANCELLED: 'statusCancelled',
+};
+
+export const StatusBadge: React.FC<{ status: RequestStatus }> = ({ status }) => {
+  const { t } = useI18n();
+  return (
+    <span
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${STATUS_STYLES[status]}`}
+    >
+      {t(STATUS_LABELS[status])}
+    </span>
+  );
+};

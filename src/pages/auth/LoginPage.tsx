@@ -4,6 +4,11 @@ import { Lock } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useI18n } from '../../contexts/I18nContext';
 
+function getFirebaseErrorCode(error: unknown): string {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return '';
+  return typeof error.code === 'string' ? error.code : '';
+}
+
 export const LoginPage: React.FC = () => {
   const { profile, signIn, authError } = useAuth();
   const { lang, setLang, t } = useI18n();
@@ -23,7 +28,18 @@ export const LoginPage: React.FC = () => {
     try {
       await signIn(email.trim(), password);
     } catch (err: unknown) {
-      setFormError(err instanceof Error ? err.message : 'Authentication failed');
+      const code = getFirebaseErrorCode(err);
+      setFormError(
+        code === 'auth/invalid-credential' ||
+          code === 'auth/user-not-found' ||
+          code === 'auth/wrong-password'
+          ? t('authInvalidCredentials')
+          : code === 'auth/network-request-failed'
+            ? t('authNetworkError')
+            : err instanceof Error
+              ? err.message
+              : t('authInvalidCredentials')
+      );
     } finally {
       setSubmitting(false);
     }
@@ -52,7 +68,12 @@ export const LoginPage: React.FC = () => {
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           {(formError || authError) && (
             <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs">
-              {formError || authError}
+              {formError ||
+                (authError?.includes('Account inactive')
+                  ? t('authAccountInactive')
+                  : authError?.includes('User profile not provisioned')
+                    ? t('authProfileMissing')
+                    : authError)}
             </div>
           )}
 

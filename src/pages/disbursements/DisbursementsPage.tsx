@@ -9,13 +9,16 @@ import {
   recordDisbursementSpark,
   reverseDisbursementSpark,
 } from '../../services/sparkOperations';
+import { useI18n } from '../../contexts/I18nContext';
 
 export const DisbursementsPage: React.FC = () => {
+  const { t } = useI18n();
   const { profile } = useAuth();
   const [eligible, setEligible] = useState<FinancialRequest[]>([]);
   const [ledger, setLedger] = useState<DisbursementRecord[]>([]);
   const [selectedReq, setSelectedReq] = useState<FinancialRequest | null>(null);
   const [amount, setAmount] = useState('');
+  const [idempotencyKey, setIdempotencyKey] = useState('');
   const [paymentDate, setPaymentDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [paymentMethod, setPaymentMethod] = useState('Cash');
   const [transactionReference, setTransactionReference] = useState('');
@@ -58,6 +61,7 @@ export const DisbursementsPage: React.FC = () => {
 
   const openPaymentModal = (req: FinancialRequest) => {
     setSelectedReq(req);
+    setIdempotencyKey(crypto.randomUUID());
     setAmount(String(req.remainingAmount));
     setPaymentMethod(req.requestType === 'CHEQUE' ? 'Cheque' : 'Cash');
     setChequeNumber(req.chequeDetails?.chequeNumber || '');
@@ -78,6 +82,7 @@ export const DisbursementsPage: React.FC = () => {
       if (!profile) throw new Error('You must be signed in to record a disbursement.');
       await recordDisbursementSpark({
         requestId: selectedReq.id,
+        idempotencyKey,
         amount: Number(amount),
         paymentDate,
         paymentMethod,
@@ -104,7 +109,7 @@ export const DisbursementsPage: React.FC = () => {
   };
 
   const handleReversal = async (paymentId: string) => {
-    const reason = window.prompt('Enter mandatory audit reason for reversing this payment:');
+    const reason = window.prompt(t('reversePaymentPrompt'));
     if (!reason || reason.trim().length < 5) return;
     try {
       if (!profile) throw new Error('You must be signed in to reverse a disbursement.');
@@ -117,10 +122,8 @@ export const DisbursementsPage: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-bold text-retac-navy">Disbursement Center</h2>
-        <p className="text-xs text-slate-500">
-          Only requests approved by both Manager and Finance Manager appear here.
-        </p>
+        <h2 className="text-lg font-bold text-retac-navy">{t('disbursementTitle')}</h2>
+        <p className="text-xs text-slate-500">{t('disbursementSubtitle')}</p>
       </div>
 
       {error && (
@@ -136,7 +139,7 @@ export const DisbursementsPage: React.FC = () => {
         >
           <div className="flex justify-between items-center">
             <h3 className="text-sm font-bold text-retac-navy">
-              Execute Disbursement — {selectedReq.requestNumber} (Remaining:{' '}
+              {t('executeDisbursement')} — {selectedReq.requestNumber} ({t('remainingLabel')}:{' '}
               {selectedReq.remainingAmount.toFixed(2)} {selectedReq.currency})
             </h3>
             <button
@@ -144,13 +147,13 @@ export const DisbursementsPage: React.FC = () => {
               onClick={() => setSelectedReq(null)}
               className="text-xs text-slate-500"
             >
-              Close
+              {t('close')}
             </button>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
             <div>
-              <label className="block text-xs font-semibold mb-1">Payment Amount *</label>
+              <label className="block text-xs font-semibold mb-1">{t('paymentAmount')}</label>
               <input
                 type="number"
                 step="0.01"
@@ -163,7 +166,7 @@ export const DisbursementsPage: React.FC = () => {
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold mb-1">Payment Date *</label>
+              <label className="block text-xs font-semibold mb-1">{t('paymentDate')}</label>
               <input
                 type="date"
                 required
@@ -173,20 +176,20 @@ export const DisbursementsPage: React.FC = () => {
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold mb-1">Payment Method *</label>
+              <label className="block text-xs font-semibold mb-1">{t('paymentMethod')}</label>
               <select
                 value={paymentMethod}
                 onChange={(e) => setPaymentMethod(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs"
               >
-                <option value="Cash">Cash</option>
-                <option value="Cheque">Cheque</option>
-                <option value="Bank Transfer">Bank Transfer</option>
-                <option value="Other">Other</option>
+                <option value="Cash">{t('paymentMethodCash')}</option>
+                <option value="Cheque">{t('paymentMethodCheque')}</option>
+                <option value="Bank Transfer">{t('paymentMethodTransfer')}</option>
+                <option value="Other">{t('paymentMethodOther')}</option>
               </select>
             </div>
             <div>
-              <label className="block text-xs font-semibold mb-1">Transaction Reference</label>
+              <label className="block text-xs font-semibold mb-1">{t('transactionReference')}</label>
               <input
                 value={transactionReference}
                 onChange={(e) => setTransactionReference(e.target.value)}
@@ -199,14 +202,14 @@ export const DisbursementsPage: React.FC = () => {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-3 rounded-lg bg-slate-50">
               <input
                 required
-                placeholder="Cheque Number *"
+                placeholder={t('chequeNumberRequired')}
                 value={chequeNumber}
                 onChange={(e) => setChequeNumber(e.target.value)}
                 className="px-3 py-2 rounded-lg border border-slate-300 text-xs"
               />
               <input
                 required
-                placeholder="Bank Name *"
+                placeholder={t('bankName')}
                 value={bankName}
                 onChange={(e) => setBankName(e.target.value)}
                 className="px-3 py-2 rounded-lg border border-slate-300 text-xs"
@@ -223,7 +226,7 @@ export const DisbursementsPage: React.FC = () => {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <input
-              placeholder="Payment notes..."
+              placeholder={t('paymentNotes')}
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               className="px-3 py-2 rounded-lg border border-slate-300 text-xs"
@@ -236,7 +239,7 @@ export const DisbursementsPage: React.FC = () => {
               disabled={submitting}
               className="px-5 py-2 rounded-lg bg-retac-navy text-retac-gold text-xs font-bold"
             >
-              {submitting ? 'Confirming...' : 'Confirm & Lock Payment'}
+              {submitting ? t('confirming') : t('confirmLockPayment')}
             </button>
           </div>
         </form>
@@ -245,19 +248,19 @@ export const DisbursementsPage: React.FC = () => {
       {/* ELIGIBLE REQUESTS */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-200 font-bold text-xs text-retac-navy">
-          Eligible Approved Requests
+          {t('eligibleApprovedRequests')}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs text-start">
             <thead className="bg-slate-50 text-slate-600 uppercase border-b border-slate-200">
               <tr>
-                <th className="px-4 py-3 text-start">Request #</th>
-                <th className="px-4 py-3 text-start">Customer / Payee</th>
-                <th className="px-4 py-3 text-end">Approved</th>
-                <th className="px-4 py-3 text-end">Paid</th>
-                <th className="px-4 py-3 text-end">Remaining</th>
-                <th className="px-4 py-3 text-start">Status</th>
-                <th className="px-4 py-3 text-end">Action</th>
+                <th className="px-4 py-3 text-start">{t('requestNumberShort')}</th>
+                <th className="px-4 py-3 text-start">{t('payee')}</th>
+                <th className="px-4 py-3 text-end">{t('approved')}</th>
+                <th className="px-4 py-3 text-end">{t('paid')}</th>
+                <th className="px-4 py-3 text-end">{t('remaining')}</th>
+                <th className="px-4 py-3 text-start">{t('statusLabel')}</th>
+                <th className="px-4 py-3 text-end">{t('action')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -279,7 +282,7 @@ export const DisbursementsPage: React.FC = () => {
                       className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-retac-navy text-white text-xs font-semibold"
                     >
                       <Wallet className="w-3.5 h-3.5 text-retac-gold" />
-                      <span>Pay</span>
+                      <span>{t('pay')}</span>
                     </button>
                   </td>
                 </tr>
@@ -287,7 +290,7 @@ export const DisbursementsPage: React.FC = () => {
               {eligible.length === 0 && (
                 <tr>
                   <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
-                    No approved requests pending disbursement.
+                    {t('noPendingDisbursements')}
                   </td>
                 </tr>
               )}
@@ -299,19 +302,19 @@ export const DisbursementsPage: React.FC = () => {
       {/* IMMUTABLE PAYMENT LEDGER */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-200 font-bold text-xs text-retac-navy">
-          Immutable Disbursement Ledger
+          {t('immutableDisbursementLedger')}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs text-start">
             <thead className="bg-slate-50 text-slate-600 uppercase border-b border-slate-200">
               <tr>
-                <th className="px-4 py-3 text-start">Date</th>
-                <th className="px-4 py-3 text-start">Request #</th>
-                <th className="px-4 py-3 text-start">Method</th>
-                <th className="px-4 py-3 text-start">Ref</th>
-                <th className="px-4 py-3 text-end">Amount</th>
-                <th className="px-4 py-3 text-start">Officer</th>
-                <th className="px-4 py-3 text-end">Control</th>
+                <th className="px-4 py-3 text-start">{t('date')}</th>
+                <th className="px-4 py-3 text-start">{t('requestNumberShort')}</th>
+                <th className="px-4 py-3 text-start">{t('method')}</th>
+                <th className="px-4 py-3 text-start">{t('referenceShort')}</th>
+                <th className="px-4 py-3 text-end">{t('amountLabel')}</th>
+                <th className="px-4 py-3 text-start">{t('officer')}</th>
+                <th className="px-4 py-3 text-end">{t('control')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -319,7 +322,15 @@ export const DisbursementsPage: React.FC = () => {
                 <tr key={p.id} className={p.isReversal ? 'bg-rose-50/40' : ''}>
                   <td className="px-4 py-3">{p.paymentDate}</td>
                   <td className="px-4 py-3 font-semibold">{p.requestNumber}</td>
-                  <td className="px-4 py-3">{p.paymentMethod}</td>
+                  <td className="px-4 py-3">
+                    {p.paymentMethod === 'Cash'
+                      ? t('paymentMethodCash')
+                      : p.paymentMethod === 'Cheque'
+                        ? t('paymentMethodCheque')
+                        : p.paymentMethod === 'Bank Transfer'
+                          ? t('paymentMethodTransfer')
+                          : t('paymentMethodOther')}
+                  </td>
                   <td className="px-4 py-3 font-mono">{p.transactionReference || '—'}</td>
                   <td className="px-4 py-3 text-end font-mono font-bold">
                     {p.amount.toFixed(2)} {p.currency}
@@ -332,7 +343,7 @@ export const DisbursementsPage: React.FC = () => {
                         className="inline-flex items-center gap-1 text-rose-700 hover:underline text-[11px]"
                       >
                         <RotateCcw className="w-3 h-3" />
-                        <span>Reverse</span>
+                        <span>{t('reverse')}</span>
                       </button>
                     )}
                   </td>

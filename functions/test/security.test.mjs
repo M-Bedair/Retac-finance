@@ -32,6 +32,17 @@ test('RETAC Security Rules Acceptance Suite', async (t) => {
       roles: ['ADMIN'],
       isActive: true,
     });
+    await setDoc(doc(db, 'audit_logs', 'seed_log'), {
+      branchId: 'ABS',
+      userId: 'officer_1',
+      actorUid: 'officer_1',
+      actorName: 'Officer',
+      actorRole: 'DISBURSEMENT_OFFICER',
+      action: 'DISBURSEMENT_RECORDED',
+      entityType: 'DISBURSEMENT',
+      entityId: 'payment_1',
+      timestamp: new Date().toISOString(),
+    });
   });
 
   await t.test('Requester can create a valid DRAFT request', async () => {
@@ -40,10 +51,12 @@ test('RETAC Security Rules Acceptance Suite', async (t) => {
       setDoc(doc(reqDb, 'requests', 'req_1'), {
         branchId: 'ABS',
         createdBy: 'requester_1',
+        requestNumber: 'DRAFT-req_1',
         status: 'DRAFT',
         requestedAmount: 2500,
         approvedAmount: 0,
         totalPaidAmount: 0,
+        remainingAmount: 2500,
       })
     );
   });
@@ -58,10 +71,10 @@ test('RETAC Security Rules Acceptance Suite', async (t) => {
     );
   });
 
-  await t.test('Active users can append their own audit logs but cannot mutate them', async () => {
+  await t.test('Users cannot forge audit logs or mutate existing records', async () => {
     const officerDb = testEnv.authenticatedContext('officer_1').firestore();
-    const auditRef = doc(officerDb, 'audit_logs', 'valid_log');
-    await assertSucceeds(
+    const auditRef = doc(officerDb, 'audit_logs', 'forged_log');
+    await assertFails(
       setDoc(auditRef, {
         branchId: 'ABS',
         userId: 'officer_1',
@@ -74,8 +87,9 @@ test('RETAC Security Rules Acceptance Suite', async (t) => {
         timestamp: new Date().toISOString(),
       })
     );
-    await assertFails(updateDoc(auditRef, { action: 'TAMPER' }));
-    await assertFails(deleteDoc(auditRef));
+    const existingAudit = doc(officerDb, 'audit_logs', 'seed_log');
+    await assertFails(updateDoc(existingAudit, { action: 'TAMPER' }));
+    await assertFails(deleteDoc(existingAudit));
   });
 
   await t.test('Cross-branch user is blocked from reading Abu Simbel requests', async () => {

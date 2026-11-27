@@ -7,6 +7,7 @@ import {
   provisionUserSpark,
   updateApprovalChainConfigSpark,
 } from '../../services/sparkOperations';
+import { useI18n } from '../../contexts/I18nContext';
 
 const ALL_ROLES: UserRole[] = [
   'ADMIN',
@@ -18,6 +19,7 @@ const ALL_ROLES: UserRole[] = [
 ];
 
 export const SettingsPage: React.FC = () => {
+  const { t } = useI18n();
   const { profile } = useAuth();
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [managerIds, setManagerIds] = useState<string[]>([]);
@@ -37,6 +39,7 @@ export const SettingsPage: React.FC = () => {
   });
   const [creatingUser, setCreatingUser] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [messageError, setMessageError] = useState(false);
 
   useEffect(() => {
     const uq = query(
@@ -72,6 +75,7 @@ export const SettingsPage: React.FC = () => {
     e.preventDefault();
     setSavingChain(true);
     setMessage(null);
+    setMessageError(false);
     try {
       if (!profile) throw new Error('You must be signed in to update settings.');
       await updateApprovalChainConfigSpark({
@@ -82,9 +86,10 @@ export const SettingsPage: React.FC = () => {
         user: profile,
       });
       setReason('');
-      setMessage('Approval chain updated and version snapshot recorded in audit logs.');
+      setMessage(t('approvalChainSaved'));
     } catch (err: unknown) {
       setMessage(err instanceof Error ? err.message : 'Failed to update approval chain');
+      setMessageError(true);
     } finally {
       setSavingChain(false);
     }
@@ -94,6 +99,7 @@ export const SettingsPage: React.FC = () => {
     e.preventDefault();
     setCreatingUser(true);
     setMessage(null);
+    setMessageError(false);
     try {
       if (!profile) throw new Error('You must be signed in to provision a user.');
       await provisionUserSpark({ ...newUser, adminUser: profile });
@@ -105,9 +111,10 @@ export const SettingsPage: React.FC = () => {
         department: 'Finance',
         roles: ['REQUESTER'],
       });
-      setMessage('User provisioned in Firebase Authentication and the branch directory.');
+      setMessage(t('userProvisionedMessage'));
     } catch (err: unknown) {
       setMessage(err instanceof Error ? err.message : 'User provisioning failed');
+      setMessageError(true);
     } finally {
       setCreatingUser(false);
     }
@@ -117,15 +124,22 @@ export const SettingsPage: React.FC = () => {
     <div className="space-y-8">
       <div>
         <h2 className="text-lg font-bold text-retac-navy">
-          System Governance & Dynamic Approval Assignment
+          {t('settingsTitle')}
         </h2>
         <p className="text-xs text-slate-500">
-          Changes apply to newly submitted requests while preserving historical request snapshots.
+          {t('settingsSubtitle')}
         </p>
       </div>
 
       {message && (
-        <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs">
+        <div
+          className={`p-3 rounded-lg border text-xs ${
+            messageError
+              ? 'bg-rose-50 border-rose-200 text-rose-800'
+              : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+          }`}
+          role={messageError ? 'alert' : 'status'}
+        >
           {message}
         </div>
       )}
@@ -138,7 +152,7 @@ export const SettingsPage: React.FC = () => {
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
           <div>
             <h3 className="text-sm font-bold text-retac-navy">
-              Active Approval Chain (Config Version #{configVersion})
+              {t('activeApprovalChain', { version: configVersion })}
             </h3>
           </div>
           <label className="inline-flex items-center gap-2 text-xs font-semibold">
@@ -147,14 +161,14 @@ export const SettingsPage: React.FC = () => {
               checked={enabled}
               onChange={(e) => setEnabled(e.target.checked)}
             />
-            <span>Workflow Enabled</span>
+            <span>{t('workflowEnabled')}</span>
           </label>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="border border-slate-200 rounded-lg p-4">
             <h4 className="text-xs font-bold text-retac-navy mb-2">
-              Stage 1: Assigned Manager Approvers
+              {t('stageOneManagers')}
             </h4>
             <div className="space-y-2 max-h-48 overflow-y-auto">
               {users
@@ -176,7 +190,7 @@ export const SettingsPage: React.FC = () => {
 
           <div className="border border-slate-200 rounded-lg p-4">
             <h4 className="text-xs font-bold text-retac-navy mb-2">
-              Stage 2: Assigned Finance Manager Approvers
+              {t('stageTwoFinance')}
             </h4>
             <div className="space-y-2 max-h-48 overflow-y-auto">
               {users
@@ -199,7 +213,7 @@ export const SettingsPage: React.FC = () => {
 
         <div className="flex flex-col sm:flex-row gap-3">
           <input
-            placeholder="Audit note / reason for configuration change..."
+            placeholder={t('approvalChangeReason')}
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             className="flex-1 px-3 py-2 rounded-lg border border-slate-300 text-xs"
@@ -209,7 +223,7 @@ export const SettingsPage: React.FC = () => {
             disabled={savingChain}
             className="px-5 py-2 rounded-lg bg-retac-navy text-retac-gold text-xs font-bold"
           >
-            {savingChain ? 'Saving...' : 'Save Approval Chain'}
+            {savingChain ? t('saving') : t('saveApprovalChain')}
           </button>
         </div>
       </form>
@@ -219,11 +233,11 @@ export const SettingsPage: React.FC = () => {
         onSubmit={handleProvisionUser}
         className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4"
       >
-        <h3 className="text-sm font-bold text-retac-navy">Provision Branch User</h3>
+        <h3 className="text-sm font-bold text-retac-navy">{t('provisionBranchUser')}</h3>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <input
             required
-            placeholder="Full Name *"
+            placeholder={t('fullNameRequired')}
             value={newUser.displayName}
             onChange={(e) => setNewUser({ ...newUser, displayName: e.target.value })}
             className="px-3 py-2 rounded-lg border border-slate-300 text-xs"
@@ -231,7 +245,7 @@ export const SettingsPage: React.FC = () => {
           <input
             type="email"
             required
-            placeholder="Corporate Email *"
+            placeholder={t('corporateEmailRequired')}
             value={newUser.email}
             onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
             className="px-3 py-2 rounded-lg border border-slate-300 text-xs"
@@ -240,7 +254,7 @@ export const SettingsPage: React.FC = () => {
             type="password"
             required
             minLength={6}
-            placeholder="Temporary Password *"
+            placeholder={t('temporaryPasswordRequired')}
             value={newUser.password}
             onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
             className="px-3 py-2 rounded-lg border border-slate-300 text-xs"
@@ -261,7 +275,19 @@ export const SettingsPage: React.FC = () => {
                   })
                 }
               />
-              <span>{role}</span>
+              <span>
+                {role === 'ADMIN'
+                  ? t('roleAdmin')
+                  : role === 'REQUESTER'
+                    ? t('roleRequester')
+                    : role === 'MANAGER'
+                      ? t('roleManager')
+                      : role === 'FINANCE_MANAGER'
+                        ? t('roleFinanceManager')
+                        : role === 'DISBURSEMENT_OFFICER'
+                          ? t('roleDisbursementOfficer')
+                          : t('roleAuditor')}
+              </span>
             </label>
           ))}
         </div>
@@ -270,7 +296,7 @@ export const SettingsPage: React.FC = () => {
           disabled={creatingUser}
           className="px-4 py-2 rounded-lg bg-retac-gold text-retac-navy text-xs font-bold"
         >
-          {creatingUser ? 'Creating...' : 'Create User'}
+          {creatingUser ? t('creating') : t('createUser')}
         </button>
       </form>
     </div>
